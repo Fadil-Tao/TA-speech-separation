@@ -35,8 +35,6 @@ export TSS_CHECKPOINT_DIR=/path/to/checkpoints
 
 ## Generate dataset
 
-Source: TITML-IDN (20 speakers, 16 kHz). Output: 5-second mixtures, SNR -5 to +5 dB, 28800/3600/3600 train/dev/test.
-
 ```bash
 python dataset/generator/titml_mix_generator_2spk.py
 python dataset/generator/titml_mix_generator_3spk.py
@@ -68,13 +66,9 @@ Checkpoints, `training_curves.png`, `training_history.json`, and `config.json` a
 
 ## Evaluate
 
-Computes SI-SNR and SI-SNRi on the full test set; saves per-file CSV and a JSON summary.
+evaluasi
 
 ```bash
 python eval/run_eval.py
 python eval/run_eval.py --models 2speaker-skim 3speaker-skim-attention
 ```
-
-## Loss and training
-
-SI-SNR loss with Permutation Invariant Training (PIT). Adam + `ReduceLROnPlateau` (factor 0.5, patience 5). Gradient clip 5.0. Mixed-precision (AMP). Best checkpoint by validation loss; periodic checkpoints every 10 epochs.
