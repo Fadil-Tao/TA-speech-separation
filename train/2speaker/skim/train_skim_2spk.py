@@ -16,7 +16,7 @@ from datetime import datetime
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(project_root / 'train'))
-from datasets_utils import build_utterance_split, DynamicMixDataset, IndonesianMixDataset
+from datasets_utils import IndonesianMixDataset
 from utils.paths import get_raw_dir, get_synthetic_dir, get_checkpoint_dir
 import site
 user_site = site.getusersitepackages()
@@ -29,10 +29,9 @@ from espnet2.enh.espnet_model import ESPnetEnhancementModel
 from espnet2.enh.loss.criterions.time_domain import SISNRLoss
 from espnet2.enh.loss.wrappers.pit_solver import PITSolver
 from implementation.skim.skim_separator import SkiMSeparator
-MODEL_CONFIG = {'encoder': {'channel': 256, 'kernel_size': 16, 'stride': 8}, 'decoder': {'channel': 256, 'kernel_size': 16, 'stride': 8}, 'separator': {'input_dim': 256, 'causal': False, 'num_spk': 2, 'predict_noise': False, 'nonlinear': 'relu', 'layer': 4, 'unit': 256, 'segment_size': 20, 'dropout': 0.2, 'mem_type': 'hc', 'seg_overlap': False}}
+MODEL_CONFIG = {'encoder': {'channel': 256, 'kernel_size': 16, 'stride': 8}, 'decoder': {'channel': 256, 'kernel_size': 16, 'stride': 8}, 'separator': {'input_dim': 256, 'causal': False, 'num_spk': 2, 'predict_noise': False, 'nonlinear': 'relu', 'layer': 4, 'unit': 256, 'segment_size': 150, 'dropout': 0.2, 'mem_type': 'hc', 'seg_overlap': False}}
 TRAIN_CONFIG = {'batch_size': 8, 'num_epochs': 100, 'learning_rate': 0.001, 'weight_decay': 1e-05, 'gradient_clip': 5.0, 'seed': 42}
 DATASET_DIR = get_synthetic_dir('TITML-2spk-v2')
-RAW_DIR = get_raw_dir()
 CHECKPOINT_DIR = get_checkpoint_dir('2speaker', 'skim')
 
 def build_model(device):
@@ -144,17 +143,14 @@ def validate(model, val_loader, device, epoch):
     avg_loss = total_loss / num_batches
     return avg_loss
 
-def main(resume_from=None, num_epochs=None, dataset_dir=None, raw_dir=None, checkpoint_dir=None):
-    global DATASET_DIR, RAW_DIR, CHECKPOINT_DIR
+def main(resume_from=None, num_epochs=None, dataset_dir=None, checkpoint_dir=None):
+    global DATASET_DIR, CHECKPOINT_DIR
     if dataset_dir:
         DATASET_DIR = Path(dataset_dir).expanduser().resolve()
-    if raw_dir:
-        RAW_DIR = Path(raw_dir).expanduser().resolve()
     if checkpoint_dir:
         CHECKPOINT_DIR = Path(checkpoint_dir).expanduser().resolve()
     CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
     print(f'DATASET_DIR    = {DATASET_DIR}')
-    print(f'RAW_DIR        = {RAW_DIR}')
     print(f'CHECKPOINT_DIR = {CHECKPOINT_DIR}')
     random.seed(TRAIN_CONFIG['seed'])
     np.random.seed(TRAIN_CONFIG['seed'])
@@ -163,10 +159,8 @@ def main(resume_from=None, num_epochs=None, dataset_dir=None, raw_dir=None, chec
         torch.cuda.manual_seed(TRAIN_CONFIG['seed'])
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f'Using device: {device}')
-    print('\nBuilding utterance-level train/dev/test split...')
-    train_utts, dev_utts, test_utts = build_utterance_split(RAW_DIR, seed=TRAIN_CONFIG['seed'], train_ratio=0.8, dev_ratio=0.1)
     print('\nLoading datasets...')
-    train_dataset = DynamicMixDataset(utterances_by_speaker=train_utts, num_speakers=2, target_duration=5.0, target_sr=16000, snr_range=(-5.0, 5.0), epoch_size=28800, gender_balance=True, augment=True)
+    train_dataset = IndonesianMixDataset(split='train', dataset_dir=DATASET_DIR, num_speakers=2, augment=False, target_duration=5.0)
     dev_dataset = IndonesianMixDataset(split='dev', dataset_dir=DATASET_DIR, num_speakers=2, augment=False, target_duration=5.0)
     test_dataset = IndonesianMixDataset(split='test', dataset_dir=DATASET_DIR, num_speakers=2, augment=False, target_duration=5.0)
     train_loader = DataLoader(train_dataset, batch_size=TRAIN_CONFIG['batch_size'], shuffle=True, num_workers=8, pin_memory=True, persistent_workers=True)
@@ -245,7 +239,6 @@ if __name__ == '__main__':
     parser.add_argument('--resume-from', type=str, default=None, help='Checkpoint filename to resume from (e.g. checkpoint_epoch_30.pth)')
     parser.add_argument('--num-epochs', type=int, default=None, help='Total number of epochs to train (overrides config)')
     parser.add_argument('--dataset-dir', type=str, default=None, help='Override synthetic dataset dir (else $TSS_SYNTHETIC_DIR or project default)')
-    parser.add_argument('--raw-dir', type=str, default=None, help='Override raw TITML-IDN dir (else $TSS_RAW_DIR or project default)')
     parser.add_argument('--checkpoint-dir', type=str, default=None, help='Override checkpoint output dir (else $TSS_CHECKPOINT_DIR or project default)')
     args = parser.parse_args()
-    main(resume_from=args.resume_from, num_epochs=args.num_epochs, dataset_dir=args.dataset_dir, raw_dir=args.raw_dir, checkpoint_dir=args.checkpoint_dir)
+    main(resume_from=args.resume_from, num_epochs=args.num_epochs, dataset_dir=args.dataset_dir, checkpoint_dir=args.checkpoint_dir)

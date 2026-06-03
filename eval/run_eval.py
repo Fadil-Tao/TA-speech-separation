@@ -9,7 +9,9 @@ import numpy as np
 import soundfile as sf
 import torch
 from tqdm import tqdm
-ROOT = Path(__file__).resolve().parents[2]
+# Repository ini berdiri sendiri (isolated): gunakan implementation milik
+# repo ini, bukan repo induk. ROOT = root TA-speech-separation.
+ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from espnet2.enh.encoder.conv_encoder import ConvEncoder
 from espnet2.enh.decoder.conv_decoder import ConvDecoder
@@ -23,11 +25,25 @@ MODEL_LIST = EVAL_DIR / 'best-model-list.txt'
 CKPT_CACHE = EVAL_DIR / 'ckpts'
 RESULTS_DIR = EVAL_DIR / 'results'
 AUDIO_LIMIT_DEFAULT = 450
-TEST_ROOT = {2: ROOT / 'dataset/synthetic/TITML-2spk-v2/test', 3: ROOT / 'dataset/synthetic/TITML-3spk-v2/test'}
+# Dataset & checkpoint berada di LUAR repo ini -> default relatif ke ROOT,
+# tetapi sebaiknya di-override via --dataset-dir dan --checkpoints-dir.
+DEFAULT_DATASET_DIR = ROOT / 'dataset' / 'synthetic'
+DEFAULT_CHECKPOINTS_DIR = ROOT / 'checkpoints'
+# Diisi di main() dari argumen CLI.
+CHECKPOINTS_DIR = DEFAULT_CHECKPOINTS_DIR
+TEST_ROOT = {}
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+# Default sesuai konfigurasi training (train/*/MODEL_CONFIG). Dipakai hanya
+# sebagai fallback bila checkpoint tidak menyimpan 'config'.
+DEFAULT_CONFIG = {'encoder': {'channel': 256, 'kernel_size': 16, 'stride': 8}, 'decoder': {'channel': 256, 'kernel_size': 16, 'stride': 8}, 'separator': {'input_dim': 256, 'causal': False, 'layer': 4, 'unit': 256, 'segment_size': 150, 'dropout': 0.1, 'mem_type': 'hc', 'seg_overlap': False, 'nonlinear': 'relu'}}
+
+_SKIM_KEYS = {'input_dim', 'causal', 'num_spk', 'predict_noise', 'nonlinear', 'layer', 'unit', 'segment_size', 'dropout', 'mem_type', 'seg_overlap'}
+_ATTN_KEYS = _SKIM_KEYS | {'num_heads'}
+
 def build_config(num_spk: int, arch: str) -> dict:
-    cfg = {'encoder': {'channel': 256, 'kernel_size': 16, 'stride': 8}, 'decoder': {'channel': 256, 'kernel_size': 16, 'stride': 8}, 'separator': {'input_dim': 256, 'causal': False, 'num_spk': num_spk, 'layer': 4, 'unit': 256, 'segment_size': 150, 'dropout': 0.1, 'mem_type': 'hc', 'seg_overlap': False, 'nonlinear': 'relu'}}
+    cfg = {'encoder': dict(DEFAULT_CONFIG['encoder']), 'decoder': dict(DEFAULT_CONFIG['decoder']), 'separator': dict(DEFAULT_CONFIG['separator'])}
+    cfg['separator']['num_spk'] = num_spk
     if arch == 'attention':
         cfg['separator']['num_heads'] = 4
     return cfg
@@ -43,6 +59,8 @@ def parse_model_name(name: str) -> tuple[int, str]:
     return (num_spk, arch)
 
 def read_model_list() -> list[tuple[str, str]]:
+    if not MODEL_LIST.exists():
+        return []
     out = []
     for line in MODEL_LIST.read_text().splitlines():
         line = line.strip()
@@ -52,10 +70,38 @@ def read_model_list() -> list[tuple[str, str]]:
         out.append((name.strip(), gid.strip()))
     return out
 
+def local_ckpt_path(name: str) -> Path:
+    """Petakan nama model -> path checkpoint lokal.
+
+    '2speaker-skim-attention' -> checkpoints/2speaker/skim-attention/best_model.pth
+    """
+    spk_token, _, rest = name.partition('-')
+    return CHECKPOINTS_DIR / spk_token / rest / 'best_model.pth'
+
+def discover_local_models() -> list[tuple[str, str]]:
+    """Temukan semua checkpoint lokal di checkpoints/<spk>/<arch>/best_model.pth.
+
+    gdrive_id dikosongkan karena tidak perlu download.
+    """
+    out = []
+    for ckpt in sorted(CHECKPOINTS_DIR.glob('*/*/best_model.pth')):
+        spk = ckpt.parent.parent.name      # mis. '2speaker'
+        arch = ckpt.parent.name            # mis. 'skim-attention'
+        out.append((f'{spk}-{arch}', ''))
+    return out
+
 def ensure_checkpoint(name: str, gdrive_id: str) -> Path:
+    # 1) checkpoint lokal di folder konvensional
+    local = local_ckpt_path(name)
+    if local.exists():
+        return local
+    # 2) cache hasil download sebelumnya
     target = CKPT_CACHE / name / 'best_model.pth'
     if target.exists():
         return target
+    # 3) download dari Google Drive (perlu gdrive_id)
+    if not gdrive_id:
+        raise FileNotFoundError(f'checkpoint lokal tidak ditemukan untuk {name} (dicari di {local}) dan tidak ada gdrive_id')
     target.parent.mkdir(parents=True, exist_ok=True)
     import gdown
     url = f'https://drive.google.com/uc?id={gdrive_id}'
@@ -93,18 +139,22 @@ def best_pit(ests, refs) -> tuple[float, tuple[int, ...]]:
     return (best_val, best_perm)
 
 def build_model(num_spk: int, arch: str, ckpt_path: Path):
-    cfg = build_config(num_spk, arch)
+    state = torch.load(ckpt_path, map_location=device, weights_only=False)
+    sd = state.get('model_state_dict', state)
+    # Utamakan config yang tersimpan di checkpoint (mis. segment_size, unit) agar
+    # arsitektur evaluasi persis sama dengan saat training. Fallback ke default.
+    cfg = state.get('config') or build_config(num_spk, arch)
+    sep_cfg = dict(cfg['separator'])
+    sep_cfg.setdefault('num_spk', num_spk)
     enc = ConvEncoder(**cfg['encoder'])
     dec = ConvDecoder(**cfg['decoder'])
     if arch == 'skim':
-        sep = SkiMSeparator(**cfg['separator'])
+        sep = SkiMSeparator(**{k: v for k, v in sep_cfg.items() if k in _SKIM_KEYS})
     elif arch == 'attention':
-        sep = SkiMAttentionSeparator(**cfg['separator'])
+        sep = SkiMAttentionSeparator(**{k: v for k, v in sep_cfg.items() if k in _ATTN_KEYS})
     else:
         raise ValueError(arch)
     enc, sep, dec = (enc.to(device).eval(), sep.to(device).eval(), dec.to(device).eval())
-    state = torch.load(ckpt_path, map_location=device, weights_only=False)
-    sd = state.get('model_state_dict', state)
 
     def split_sd(prefix):
         return {k.replace(f'{prefix}.', '', 1): v for k, v in sd.items() if k.startswith(f'{prefix}.')}
@@ -190,15 +240,30 @@ def eval_model(name: str, gdrive_id: str, audio_limit: int) -> dict:
     return stats
 
 def main():
-    p = argparse.ArgumentParser()
-    p.add_argument('--models', nargs='*', default=None, help='subset of model names to eval')
+    global CHECKPOINTS_DIR, TEST_ROOT
+    p = argparse.ArgumentParser(description='Evaluasi SI-SNR model SkiM / SkiM-Attention pada test set.')
+    p.add_argument('--models', nargs='*', default=None, help='subset nama model yang dievaluasi')
+    p.add_argument('--dataset-dir', default=str(DEFAULT_DATASET_DIR), help='folder berisi TITML-2spk-v2/ dan TITML-3spk-v2/ (default: ROOT/dataset/synthetic)')
+    p.add_argument('--checkpoints-dir', default=str(DEFAULT_CHECKPOINTS_DIR), help='folder checkpoints/<spk>/<arch>/best_model.pth (default: ROOT/checkpoints)')
+    p.add_argument('--local', action='store_true', help='temukan otomatis semua checkpoint lokal di --checkpoints-dir (tanpa perlu best-model-list.txt)')
     p.add_argument('--audio-limit', type=int, default=int(os.environ.get('AUDIO_LIMIT', AUDIO_LIMIT_DEFAULT)))
     args = p.parse_args()
-    print(f'device: {device}')
-    print(f'audio_limit: {args.audio_limit}')
+
+    CHECKPOINTS_DIR = Path(args.checkpoints_dir).expanduser().resolve()
+    dataset_dir = Path(args.dataset_dir).expanduser().resolve()
+    TEST_ROOT = {2: dataset_dir / 'TITML-2spk-v2' / 'test', 3: dataset_dir / 'TITML-3spk-v2' / 'test'}
+
+    print(f'device         : {device}')
+    print(f'dataset_dir    : {dataset_dir}')
+    print(f'checkpoints_dir: {CHECKPOINTS_DIR}')
+    print(f'audio_limit    : {args.audio_limit}')
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     CKPT_CACHE.mkdir(parents=True, exist_ok=True)
-    entries = read_model_list()
+
+    # Sumber daftar model: --local (auto-discover) ATAU best-model-list.txt
+    entries = discover_local_models() if args.local else read_model_list()
+    if not entries:
+        sys.exit('tidak ada model untuk dievaluasi. Pakai --local untuk memindai checkpoint lokal, atau sediakan best-model-list.txt')
     if args.models:
         wanted = set(args.models)
         entries = [(n, g) for n, g in entries if n in wanted]

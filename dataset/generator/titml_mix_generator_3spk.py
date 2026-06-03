@@ -123,36 +123,6 @@ class TITMLMixGenerator3Spk:
             audio3_scaled = audio3_scaled * scale_factor
         return (mixture, audio1, audio2_scaled, audio3_scaled)
 
-    def split_speakers(self, train_ratio=0.8, dev_ratio=0.1, test_ratio=0.1):
-        speaker_ids = list(self.speakers.keys())
-        total = len(speaker_ids)
-        min_speakers = 3
-        if total < min_speakers * 3:
-            raise ValueError(f'Need at least {min_speakers * 3} speakers, got {total}')
-        n_test = max(min_speakers, int(total * test_ratio))
-        n_dev = max(min_speakers, int(total * dev_ratio))
-        n_train = total - n_dev - n_test
-        if n_train < min_speakers:
-            deficit = min_speakers - n_train
-            if n_test > min_speakers:
-                take_from_test = min(deficit, n_test - min_speakers)
-                n_test -= take_from_test
-                n_train += take_from_test
-                deficit -= take_from_test
-            if deficit > 0 and n_dev > min_speakers:
-                take_from_dev = min(deficit, n_dev - min_speakers)
-                n_dev -= take_from_dev
-                n_train += take_from_dev
-        random.shuffle(speaker_ids)
-        train_speakers = speaker_ids[:n_train]
-        dev_speakers = speaker_ids[n_train:n_train + n_dev]
-        test_speakers = speaker_ids[n_train + n_dev:]
-        print(f'\nSpeaker Split (Speaker-Independent, 3-Speaker):')
-        print(f'  Train: {len(train_speakers)} speakers {sorted(train_speakers)}')
-        print(f'  Dev:   {len(dev_speakers)} speakers {sorted(dev_speakers)}')
-        print(f'  Test:  {len(test_speakers)} speakers {sorted(test_speakers)}')
-        return (train_speakers, dev_speakers, test_speakers)
-
     def split_utterances(self, train_ratio=0.8, dev_ratio=0.1, test_ratio=0.1):
         train_utts = defaultdict(list)
         dev_utts = defaultdict(list)
@@ -229,59 +199,6 @@ class TITMLMixGenerator3Spk:
         self._save_metadata(output_split, success_count, speaker_list, target_duration)
         return success_count
 
-    def generate_mixtures(self, speaker_list, split_name, num_mixtures, target_duration=5.0, gender_balance=True):
-        if len(speaker_list) < 3:
-            raise ValueError(f'Need at least 3 speakers, got {len(speaker_list)}')
-        output_split = self.output_dir / split_name
-        for subdir in ('mix', 's1', 's2', 's3'):
-            (output_split / subdir).mkdir(parents=True, exist_ok=True)
-        print(f"\nGenerating {num_mixtures} 3-speaker mixtures for '{split_name}' split...")
-        print(f'   Using {len(speaker_list)} speakers')
-        print(f'   Target duration: {target_duration}s')
-        males = [s for s in speaker_list if s.startswith('m')]
-        females = [s for s in speaker_list if s.startswith('f')]
-        success_count = 0
-        attempt = 0
-        max_attempts = num_mixtures * 5
-        pbar = tqdm(total=num_mixtures, desc=f'{split_name}')
-        while success_count < num_mixtures and attempt < max_attempts:
-            attempt += 1
-            if gender_balance and len(males) >= 1 and (len(females) >= 1):
-                r = random.random()
-                if r < 0.5 and len(males) >= 2 and (len(females) >= 1):
-                    chosen = random.sample(males, 2) + random.sample(females, 1)
-                elif r < 0.8 and len(females) >= 2 and (len(males) >= 1):
-                    chosen = random.sample(males, 1) + random.sample(females, 2)
-                else:
-                    chosen = random.sample(speaker_list, 3)
-            else:
-                chosen = random.sample(speaker_list, 3)
-            spk1, spk2, spk3 = chosen
-            audio1 = self.load_audio(random.choice(self.speakers[spk1]), target_duration=target_duration)
-            audio2 = self.load_audio(random.choice(self.speakers[spk2]), target_duration=target_duration)
-            audio3 = self.load_audio(random.choice(self.speakers[spk3]), target_duration=target_duration)
-            if audio1 is None or audio2 is None or audio3 is None:
-                continue
-            try:
-                mixture, src1, src2, src3 = self.mix_three_sources(audio1, audio2, audio3)
-            except Exception as e:
-                print(f'Error mixing: {e}')
-                continue
-            filename = f'{split_name}_{success_count:05d}.wav'
-            sf.write(output_split / 'mix' / filename, mixture, self.target_sr)
-            sf.write(output_split / 's1' / filename, src1, self.target_sr)
-            sf.write(output_split / 's2' / filename, src2, self.target_sr)
-            sf.write(output_split / 's3' / filename, src3, self.target_sr)
-            success_count += 1
-            pbar.update(1)
-        pbar.close()
-        if success_count < num_mixtures:
-            print(f'Warning: Generated {success_count}/{num_mixtures} mixtures')
-        else:
-            print(f'Generated {success_count} mixtures')
-        self._save_metadata(output_split, success_count, speaker_list, target_duration)
-        return success_count
-
     def _save_metadata(self, output_path, num_mixtures, speakers, target_duration):
         metadata = {'num_mixtures': num_mixtures, 'sample_rate': self.target_sr, 'num_sources': 3, 'num_speakers_total': len(speakers), 'speakers': speakers, 'source': 'TITML-IDN', 'duration_seconds': target_duration, 'total_duration_hours': num_mixtures * target_duration / 3600}
         with open(output_path / 'metadata.json', 'w') as f:
@@ -304,7 +221,6 @@ def main():
     parser.add_argument('--train-ratio', type=float, default=0.8, help='Ratio of training data (default: 0.8)')
     parser.add_argument('--dev-ratio', type=float, default=0.1, help='Ratio of dev data (default: 0.1)')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility (default: 42)')
-    parser.add_argument('--split-mode', type=str, choices=['speaker', 'utterance'], default='utterance', help='Split mode: "speaker" (speaker-independent) or "utterance" (all speakers in every split, non-overlapping utterances). Default: utterance')
     args = parser.parse_args()
     args.titml_dir = str(get_raw_dir(args.titml_dir))
     args.output_dir = str(get_synthetic_dir('TITML-3spk', args.output_dir))
@@ -328,7 +244,6 @@ def main():
     print('=' * 60)
     print(f'TITML source: {args.titml_dir}')
     print(f'Output directory: {args.output_dir}')
-    print(f'Split mode: {args.split_mode}')
     print(f'Target duration: {args.target_duration}s')
     print(f'Target total hours: {args.target_hours}h')
     print(f'Total mixtures: {total_mixtures}')
@@ -337,16 +252,10 @@ def main():
     print(f'  Test:  {test_mixtures} ({(1 - args.train_ratio - args.dev_ratio) * 100:.0f}%)')
     print('=' * 60)
     generator = TITMLMixGenerator3Spk(titml_dir=args.titml_dir, output_dir=args.output_dir, target_sr=16000, seed=args.seed)
-    if args.split_mode == 'utterance':
-        train_utts, dev_utts, test_utts = generator.split_utterances(train_ratio=args.train_ratio, dev_ratio=args.dev_ratio, test_ratio=1 - args.train_ratio - args.dev_ratio)
-        train_count = generator.generate_mixtures_from_utterances(utterances_by_speaker=train_utts, split_name='train', num_mixtures=train_mixtures, target_duration=args.target_duration, gender_balance=True)
-        dev_count = generator.generate_mixtures_from_utterances(utterances_by_speaker=dev_utts, split_name='dev', num_mixtures=dev_mixtures, target_duration=args.target_duration, gender_balance=True)
-        test_count = generator.generate_mixtures_from_utterances(utterances_by_speaker=test_utts, split_name='test', num_mixtures=test_mixtures, target_duration=args.target_duration, gender_balance=True)
-    else:
-        train_spk, dev_spk, test_spk = generator.split_speakers(train_ratio=args.train_ratio, dev_ratio=args.dev_ratio, test_ratio=1 - args.train_ratio - args.dev_ratio)
-        train_count = generator.generate_mixtures(speaker_list=train_spk, split_name='train', num_mixtures=train_mixtures, target_duration=args.target_duration, gender_balance=True)
-        dev_count = generator.generate_mixtures(speaker_list=dev_spk, split_name='dev', num_mixtures=dev_mixtures, target_duration=args.target_duration, gender_balance=True)
-        test_count = generator.generate_mixtures(speaker_list=test_spk, split_name='test', num_mixtures=test_mixtures, target_duration=args.target_duration, gender_balance=True)
+    train_utts, dev_utts, test_utts = generator.split_utterances(train_ratio=args.train_ratio, dev_ratio=args.dev_ratio, test_ratio=1 - args.train_ratio - args.dev_ratio)
+    train_count = generator.generate_mixtures_from_utterances(utterances_by_speaker=train_utts, split_name='train', num_mixtures=train_mixtures, target_duration=args.target_duration, gender_balance=True)
+    dev_count = generator.generate_mixtures_from_utterances(utterances_by_speaker=dev_utts, split_name='dev', num_mixtures=dev_mixtures, target_duration=args.target_duration, gender_balance=True)
+    test_count = generator.generate_mixtures_from_utterances(utterances_by_speaker=test_utts, split_name='test', num_mixtures=test_mixtures, target_duration=args.target_duration, gender_balance=True)
     generator.generate_dataset_info(train_count, dev_count, test_count, args.target_duration)
     print('\n' + '=' * 60)
     print('Dataset Generation Complete!')

@@ -15,7 +15,7 @@ from datetime import datetime
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(project_root / 'train'))
-from datasets_utils import build_utterance_split, DynamicMixDataset, IndonesianMixDataset
+from datasets_utils import IndonesianMixDataset
 from espnet2.enh.encoder.conv_encoder import ConvEncoder
 from implementation.conv_encoder_abs import ConvEncoderAbs
 from espnet2.enh.decoder.conv_decoder import ConvDecoder
@@ -23,10 +23,9 @@ from espnet2.enh.espnet_model import ESPnetEnhancementModel
 from espnet2.enh.loss.criterions.time_domain import SISNRLoss
 from espnet2.enh.loss.wrappers.pit_solver import PITSolver
 from implementation.skim_attention.skim_attention_separator import SkiMAttentionSeparator
-MODEL_CONFIG = {'encoder': {'channel': 256, 'kernel_size': 16, 'stride': 8}, 'decoder': {'channel': 256, 'kernel_size': 16, 'stride': 8}, 'separator': {'input_dim': 256, 'causal': False, 'num_spk': 3, 'predict_noise': False, 'nonlinear': 'relu', 'layer': 4, 'unit': 256, 'segment_size': 20, 'dropout': 0.2, 'mem_type': 'hc', 'seg_overlap': False, 'num_heads': 4}}
+MODEL_CONFIG = {'encoder': {'channel': 256, 'kernel_size': 16, 'stride': 8}, 'decoder': {'channel': 256, 'kernel_size': 16, 'stride': 8}, 'separator': {'input_dim': 256, 'causal': False, 'num_spk': 3, 'predict_noise': False, 'nonlinear': 'relu', 'layer': 4, 'unit': 256, 'segment_size': 150, 'dropout': 0.2, 'mem_type': 'hc', 'seg_overlap': False, 'num_heads': 4}}
 TRAIN_CONFIG = {'batch_size': 8, 'num_epochs': 100, 'learning_rate': 0.001, 'weight_decay': 1e-05, 'gradient_clip': 5.0, 'seed': 42}
 DATASET_DIR = project_root / 'dataset' / 'synthetic' / 'TITML-3spk-v2'
-RAW_DIR = project_root / 'dataset' / 'raw' / 'TTML-IDN'
 CHECKPOINT_DIR = project_root / 'checkpoints' / '3speaker' / 'skim-attention'
 CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -151,10 +150,8 @@ def main():
         torch.cuda.manual_seed(TRAIN_CONFIG['seed'])
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f'Using device: {device}')
-    print('\nBuilding utterance-level train/dev/test split...')
-    train_utts, dev_utts, test_utts = build_utterance_split(RAW_DIR, seed=TRAIN_CONFIG['seed'], train_ratio=0.8, dev_ratio=0.1)
     print('\nLoading datasets...')
-    train_dataset = DynamicMixDataset(utterances_by_speaker=train_utts, num_speakers=3, target_duration=5.0, target_sr=16000, snr_range=(-5.0, 5.0), epoch_size=28800, gender_balance=True, augment=True)
+    train_dataset = IndonesianMixDataset(split='train', dataset_dir=DATASET_DIR, num_speakers=3, augment=False, target_duration=5.0)
     dev_dataset = IndonesianMixDataset(split='dev', dataset_dir=DATASET_DIR, num_speakers=3, augment=False, target_duration=5.0)
     test_dataset = IndonesianMixDataset(split='test', dataset_dir=DATASET_DIR, num_speakers=3, augment=False, target_duration=5.0)
     train_loader = DataLoader(train_dataset, batch_size=TRAIN_CONFIG['batch_size'], shuffle=True, num_workers=8, pin_memory=True, persistent_workers=True)

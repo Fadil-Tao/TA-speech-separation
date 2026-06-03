@@ -14,18 +14,17 @@ project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(project_root / 'train'))
 from utils.paths import get_raw_dir, get_synthetic_dir, get_checkpoint_dir
-from datasets_utils import build_utterance_split, DynamicMixDataset, IndonesianMixDataset
+from datasets_utils import IndonesianMixDataset
 from espnet2.enh.encoder.conv_encoder import ConvEncoder
 from espnet2.enh.decoder.conv_decoder import ConvDecoder
 from espnet2.enh.espnet_model import ESPnetEnhancementModel
 from espnet2.enh.loss.criterions.time_domain import SISNRLoss
 from espnet2.enh.loss.wrappers.pit_solver import PITSolver
 from implementation.skim.skim_separator import SkiMSeparator
-MODEL_CONFIG = {'encoder': {'channel': 256, 'kernel_size': 16, 'stride': 8}, 'decoder': {'channel': 256, 'kernel_size': 16, 'stride': 8}, 'separator': {'input_dim': 256, 'causal': False, 'num_spk': 3, 'predict_noise': False, 'nonlinear': 'relu', 'layer': 4, 'unit': 256, 'segment_size': 20, 'dropout': 0.1, 'mem_type': 'hc', 'seg_overlap': False}}
+MODEL_CONFIG = {'encoder': {'channel': 256, 'kernel_size': 16, 'stride': 8}, 'decoder': {'channel': 256, 'kernel_size': 16, 'stride': 8}, 'separator': {'input_dim': 256, 'causal': False, 'num_spk': 3, 'predict_noise': False, 'nonlinear': 'relu', 'layer': 4, 'unit': 256, 'segment_size': 150, 'dropout': 0.1, 'mem_type': 'hc', 'seg_overlap': False}}
 TRAIN_CONFIG = {'batch_size': 8, 'num_epochs': 100, 'learning_rate': 0.0001, 'weight_decay': 1e-05, 'gradient_clip': 5.0, 'seed': 42}
 TRANSFER_CONFIG = {'pretrained_path': 'checkpoints/2speaker/skim/best_model.pth', 'description': 'Transfer from SkiM 2-speaker to 3-speaker'}
 DATASET_DIR = get_synthetic_dir('TITML-3spk-v2')
-RAW_DIR = get_raw_dir()
 CHECKPOINT_DIR = get_checkpoint_dir('3speaker', 'skim-transfer')
 CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -37,10 +36,10 @@ def load_pretrained_weights(model, pretrained_path, device):
         p = Path(pretrained_path).expanduser()
         pretrained_full_path = p if p.is_absolute() else (project_root / p).resolve()
     if not pretrained_full_path.exists():
-        print(f'\n⚠️  Warning: Pretrained model not found at {pretrained_full_path}')
+        print(f'\n Warning: Pretrained model not found at {pretrained_full_path}')
         print('Training from scratch...')
         return model
-    print(f'\n📥 Loading pretrained weights from: {pretrained_path}')
+    print(f'\n Loading pretrained weights from: {pretrained_path}')
     checkpoint = torch.load(pretrained_full_path, map_location=device, weights_only=False)
     pretrained_dict = checkpoint['model_state_dict']
     model_dict = model.state_dict()
@@ -195,10 +194,8 @@ def main(resume_from=None, num_epochs=None):
     print(f'Target: 3-speaker separation')
     print(f"Learning Rate: {TRAIN_CONFIG['learning_rate']}")
     print('=' * 60)
-    print('\nBuilding utterance-level train/dev/test split...')
-    train_utts, dev_utts, test_utts = build_utterance_split(RAW_DIR, seed=TRAIN_CONFIG['seed'], train_ratio=0.8, dev_ratio=0.1)
     print('\nLoading datasets...')
-    train_dataset = DynamicMixDataset(utterances_by_speaker=train_utts, num_speakers=3, target_duration=5.0, target_sr=16000, snr_range=(-5.0, 5.0), epoch_size=28800, gender_balance=True, augment=True)
+    train_dataset = IndonesianMixDataset(split='train', dataset_dir=DATASET_DIR, num_speakers=3, augment=False, target_duration=5.0)
     dev_dataset = IndonesianMixDataset(split='dev', dataset_dir=DATASET_DIR, num_speakers=3, augment=False, target_duration=5.0)
     test_dataset = IndonesianMixDataset(split='test', dataset_dir=DATASET_DIR, num_speakers=3, augment=False, target_duration=5.0)
     train_loader = DataLoader(train_dataset, batch_size=TRAIN_CONFIG['batch_size'], shuffle=True, num_workers=8, pin_memory=True, persistent_workers=True)
