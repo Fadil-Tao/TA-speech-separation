@@ -24,8 +24,8 @@ from espnet2.enh.espnet_model import ESPnetEnhancementModel
 from espnet2.enh.loss.criterions.time_domain import SISNRLoss
 from espnet2.enh.loss.wrappers.pit_solver import PITSolver
 from implementation.skim_attention.skim_attention_separator import SkiMAttentionSeparator
-MODEL_CONFIG = {'encoder': {'channel': 256, 'kernel_size': 16, 'stride': 8}, 'decoder': {'channel': 256, 'kernel_size': 16, 'stride': 8}, 'separator': {'input_dim': 256, 'causal': False, 'num_spk': 2, 'predict_noise': False, 'nonlinear': 'relu', 'layer': 4, 'unit': 256, 'segment_size': 150, 'dropout': 0.2, 'mem_type': 'hc', 'seg_overlap': False, 'num_heads': 4}}
-TRAIN_CONFIG = {'batch_size': 8, 'num_epochs': 100, 'learning_rate': 0.001, 'weight_decay': 1e-05, 'gradient_clip': 5.0, 'seed': 42}
+MODEL_CONFIG = {'encoder': {'channel': 256, 'kernel_size': 16, 'stride': 8}, 'decoder': {'channel': 256, 'kernel_size': 16, 'stride': 8}, 'separator': {'input_dim': 256, 'causal': False, 'num_spk': 2, 'predict_noise': False, 'nonlinear': 'relu', 'layer': 4, 'unit': 256, 'segment_size': 150, 'dropout': 0.1, 'mem_type': 'hc', 'seg_overlap': False, 'num_heads': 4}}
+TRAIN_CONFIG = {'batch_size': 8, 'num_epochs': 100, 'learning_rate': 0.001, 'weight_decay': 0.0, 'gradient_clip': 5.0, 'seed': 42}
 DATASET_DIR = project_root / 'dataset' / 'synthetic' / 'TITML-2spk-v2'
 CHECKPOINT_DIR = project_root / 'checkpoints' / '2speaker' / 'skim-attention'
 CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)

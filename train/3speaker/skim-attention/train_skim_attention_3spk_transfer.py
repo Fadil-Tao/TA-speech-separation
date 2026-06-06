@@ -20,8 +20,8 @@ from espnet2.enh.espnet_model import ESPnetEnhancementModel
 from espnet2.enh.loss.criterions.time_domain import SISNRLoss
 from espnet2.enh.loss.wrappers.pit_solver import PITSolver
 from implementation.skim_attention.skim_attention_separator import SkiMAttentionSeparator
-MODEL_CONFIG = {'encoder': {'channel': 256, 'kernel_size': 16, 'stride': 8}, 'decoder': {'channel': 256, 'kernel_size': 16, 'stride': 8}, 'separator': {'input_dim': 256, 'causal': False, 'num_spk': 3, 'predict_noise': False, 'nonlinear': 'relu', 'layer': 4, 'unit': 256, 'segment_size': 150, 'dropout': 0.2, 'mem_type': 'hc', 'seg_overlap': False, 'num_heads': 4}}
-TRAIN_CONFIG = {'batch_size': 8, 'num_epochs': 100, 'learning_rate': 0.0001, 'weight_decay': 1e-05, 'gradient_clip': 5.0, 'seed': 42}
+MODEL_CONFIG = {'encoder': {'channel': 256, 'kernel_size': 16, 'stride': 8}, 'decoder': {'channel': 256, 'kernel_size': 16, 'stride': 8}, 'separator': {'input_dim': 256, 'causal': False, 'num_spk': 3, 'predict_noise': False, 'nonlinear': 'relu', 'layer': 4, 'unit': 256, 'segment_size': 150, 'dropout': 0.1, 'mem_type': 'hc', 'seg_overlap': False, 'num_heads': 4}}
+TRAIN_CONFIG = {'batch_size': 8, 'num_epochs': 100, 'learning_rate': 0.001, 'weight_decay': 0.0, 'gradient_clip': 5.0, 'seed': 42}
 TRANSFER_CONFIG = {'pretrained_path': 'checkpoints/2speaker/skim-attention/best_model.pth', 'description': 'Transfer from SkiM Attention 2-speaker to 3-speaker'}
 DATASET_DIR = project_root / 'dataset' / 'synthetic' / 'TITML-3spk-v2'
 CHECKPOINT_DIR = project_root / 'checkpoints' / '3speaker' / 'skim-attention-transfer'
@@ -193,7 +193,7 @@ def main(resume_from=None, num_epochs=None, reset_gates=False):
     print('=' * 60)
     print(f"Source: {TRANSFER_CONFIG['pretrained_path']}")
     print(f'Target: 3-speaker separation')
-    print(f"Learning Rate: {TRAIN_CONFIG['learning_rate']} (10x smaller)")
+    print(f"Learning Rate: {TRAIN_CONFIG['learning_rate']}")
     print('=' * 60)
     print('\nLoading datasets...')
     train_dataset = IndonesianMixDataset(split='train', dataset_dir=DATASET_DIR, num_speakers=3, augment=False, target_duration=5.0)

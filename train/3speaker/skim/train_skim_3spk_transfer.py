@@ -22,7 +22,7 @@ from espnet2.enh.loss.criterions.time_domain import SISNRLoss
 from espnet2.enh.loss.wrappers.pit_solver import PITSolver
 from implementation.skim.skim_separator import SkiMSeparator
 MODEL_CONFIG = {'encoder': {'channel': 256, 'kernel_size': 16, 'stride': 8}, 'decoder': {'channel': 256, 'kernel_size': 16, 'stride': 8}, 'separator': {'input_dim': 256, 'causal': False, 'num_spk': 3, 'predict_noise': False, 'nonlinear': 'relu', 'layer': 4, 'unit': 256, 'segment_size': 150, 'dropout': 0.1, 'mem_type': 'hc', 'seg_overlap': False}}
-TRAIN_CONFIG = {'batch_size': 8, 'num_epochs': 100, 'learning_rate': 0.0001, 'weight_decay': 1e-05, 'gradient_clip': 5.0, 'seed': 42}
+TRAIN_CONFIG = {'batch_size': 8, 'num_epochs': 100, 'learning_rate': 0.001, 'weight_decay': 0.0, 'gradient_clip': 5.0, 'seed': 42}
 TRANSFER_CONFIG = {'pretrained_path': 'checkpoints/2speaker/skim/best_model.pth', 'description': 'Transfer from SkiM 2-speaker to 3-speaker'}
 DATASET_DIR = get_synthetic_dir('TITML-3spk-v2')
 CHECKPOINT_DIR = get_checkpoint_dir('3speaker', 'skim-transfer')
