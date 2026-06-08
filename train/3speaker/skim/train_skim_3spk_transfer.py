@@ -227,7 +227,7 @@ def main(resume_from=None, num_epochs=None):
             try:
                 optimizer.load_state_dict(ckpt['optimizer_state_dict'])
             except (ValueError, KeyError):
-                print('  ⚠️ Optimizer state incompatible, using fresh optimizer')
+                print('  Optimizer state incompatible, using fresh optimizer')
         if 'scheduler_state_dict' in ckpt:
             scheduler.load_state_dict(ckpt['scheduler_state_dict'])
         if 'scaler_state_dict' in ckpt:

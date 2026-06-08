@@ -211,28 +211,23 @@ def eval_model(name: str, gdrive_id: str, audio_limit: int) -> dict:
     print(f'\n=== {name} (num_spk={num_spk}, arch={arch}, test={len(mix_files)}) ===')
     csv_path = out_dir / 'per_file.csv'
     csv_f = csv_path.open('w', buffering=1)
-    csv_f.write('file_id,sisnr,sisnri,mix_sisnr,perm\n')
-    sisnrs, sisnris = ([], [])
+    csv_f.write('file_id,sisnr,perm\n')
+    sisnrs = []
     for idx, mp in enumerate(tqdm(mix_files, desc=name)):
         fid = mp.stem
         mix_np = load_wav(mp)
         refs = [load_wav(test_root / f's{i}' / f'{fid}.wav') for i in range(1, num_spk + 1)]
         ests = [normalize_len(e) for e in separate(enc, sep, dec, mix_np)]
         sep_si, perm = best_pit(ests, refs)
-        mix_si = float(np.mean([si_snr(mix_np, r) for r in refs]))
-        sisnri = sep_si - mix_si
         sisnrs.append(sep_si)
-        sisnris.append(sisnri)
-        csv_f.write(f"{fid},{sep_si:.4f},{sisnri:.4f},{mix_si:.4f},{'-'.join(map(str, perm))}\n")
+        csv_f.write(f"{fid},{sep_si:.4f},{'-'.join(map(str, perm))}\n")
         if idx < audio_limit:
             save_audio_set(audio_dir, fid, mix_np, refs, ests, perm)
     csv_f.close()
     arr_si = np.array(sisnrs)
-    arr_sii = np.array(sisnris)
-    stats = {'model': name, 'num_spk': num_spk, 'arch': arch, 'n_eval': int(len(arr_si)), 'n_audio_saved': int(min(audio_limit, len(mix_files))), 'mean_sisnr': float(arr_si.mean()), 'std_sisnr': float(arr_si.std()), 'median_sisnr': float(np.median(arr_si)), 'mean_sisnri': float(arr_sii.mean()), 'std_sisnri': float(arr_sii.std())}
+    stats = {'model': name, 'num_spk': num_spk, 'arch': arch, 'n_eval': int(len(arr_si)), 'n_audio_saved': int(min(audio_limit, len(mix_files))), 'mean_sisnr': float(arr_si.mean()), 'std_sisnr': float(arr_si.std()), 'median_sisnr': float(np.median(arr_si))}
     (out_dir / 'stats.json').write_text(json.dumps(stats, indent=2))
     print(f"  mean SI-SNR : {stats['mean_sisnr']:.3f} ± {stats['std_sisnr']:.3f} dB")
-    print(f"  mean SI-SNRi: {stats['mean_sisnri']:.3f} ± {stats['std_sisnri']:.3f} dB")
     del enc, sep, dec
     gc.collect()
     if torch.cuda.is_available():
