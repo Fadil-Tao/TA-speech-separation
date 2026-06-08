@@ -65,7 +65,7 @@ def load_pretrained_weights(model, pretrained_path, device):
         for name, old_shape, new_shape in reinitialized_layers:
             print(f'   {name}: {old_shape} → {new_shape}')
     if skipped_layers:
-        print(f'\n⚠️  Skipped {len(skipped_layers)} layer(s) not in target model')
+        print(f'\n Skipped {len(skipped_layers)} layer(s) not in target model')
     print('=' * 60)
     return model
 
@@ -143,7 +143,7 @@ def train_epoch(model, train_loader, optimizer, scaler, device, epoch):
         with torch.amp.autocast(device_type='cuda' if device.type == 'cuda' else 'cpu'):
             loss, stats, weight = model(speech_mix=mix, speech_mix_lengths=mix_lengths, speech_ref1=s1, speech_ref1_lengths=ref_lengths, speech_ref2=s2, speech_ref2_lengths=ref_lengths, speech_ref3=s3, speech_ref3_lengths=ref_lengths)
         if torch.isnan(loss) or torch.isinf(loss):
-            print(f'\n⚠️ Warning: NaN/Inf loss at batch {batch_idx}, skipping...')
+            print(f'\n Warning: NaN/Inf loss at batch {batch_idx}, skipping...')
             continue
         scaler.scale(loss).backward()
         scaler.unscale_(optimizer)
@@ -261,7 +261,7 @@ def main(resume_from=None, num_epochs=None):
             save_training_curves(train_losses, val_losses, CHECKPOINT_DIR)
             save_training_history(train_losses, val_losses, CHECKPOINT_DIR)
     except KeyboardInterrupt:
-        print('\n⚠️ Training interrupted by user')
+        print('\n Training interrupted by user')
         if train_losses:
             torch.save({'epoch': epoch, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'scheduler_state_dict': scheduler.state_dict(), 'scaler_state_dict': scaler.state_dict(), 'train_loss': train_losses[-1], 'val_loss': val_losses[-1] if val_losses else float('inf'), 'best_val_loss': best_val_loss, 'train_losses': train_losses, 'val_losses': val_losses}, CHECKPOINT_DIR / 'checkpoint_interrupted.pth')
             print(f'  ✓ Interrupted checkpoint saved (epoch {epoch})')
