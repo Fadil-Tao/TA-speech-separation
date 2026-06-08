@@ -34,14 +34,14 @@ def build_model(device):
     print('Building SkiM Attention 3-Speaker Model')
     print('=' * 60)
     encoder = ConvEncoder(channel=MODEL_CONFIG['encoder']['channel'], kernel_size=MODEL_CONFIG['encoder']['kernel_size'], stride=MODEL_CONFIG['encoder']['stride'])
-    print(f"✓ Encoder: Conv1D ({MODEL_CONFIG['encoder']['channel']} channels)")
+    print(f"Encoder: Conv1D ({MODEL_CONFIG['encoder']['channel']} channels)")
     separator = SkiMAttentionSeparator(input_dim=MODEL_CONFIG['separator']['input_dim'], causal=MODEL_CONFIG['separator']['causal'], num_spk=MODEL_CONFIG['separator']['num_spk'], predict_noise=MODEL_CONFIG['separator']['predict_noise'], nonlinear=MODEL_CONFIG['separator']['nonlinear'], layer=MODEL_CONFIG['separator']['layer'], unit=MODEL_CONFIG['separator']['unit'], segment_size=MODEL_CONFIG['separator']['segment_size'], dropout=MODEL_CONFIG['separator']['dropout'], num_heads=MODEL_CONFIG['separator']['num_heads'], mem_type=MODEL_CONFIG['separator']['mem_type'], seg_overlap=MODEL_CONFIG['separator']['seg_overlap'])
-    print(f"✓ Separator: SkiM Attention ({MODEL_CONFIG['separator']['layer']} layers, {MODEL_CONFIG['separator']['unit']} units, {MODEL_CONFIG['separator']['num_heads']} heads, {MODEL_CONFIG['separator']['num_spk']} speakers)")
+    print(f"Separator: SkiM Attention ({MODEL_CONFIG['separator']['layer']} layers, {MODEL_CONFIG['separator']['unit']} units, {MODEL_CONFIG['separator']['num_heads']} heads, {MODEL_CONFIG['separator']['num_spk']} speakers)")
     decoder = ConvDecoder(channel=MODEL_CONFIG['decoder']['channel'], kernel_size=MODEL_CONFIG['decoder']['kernel_size'], stride=MODEL_CONFIG['decoder']['stride'])
-    print(f'✓ Decoder: ConvTranspose1D')
+    print(f'Decoder: ConvTranspose1D')
     criterion = SISNRLoss()
     pit_wrapper = PITSolver(criterion=criterion)
-    print(f'✓ Loss: SI-SNR with PIT')
+    print(f'Loss: SI-SNR with PIT')
     model = ESPnetEnhancementModel(encoder=encoder, separator=separator, decoder=decoder, mask_module=None, loss_wrappers=[pit_wrapper], loss_type='si_snr')
     model = model.to(device)
     num_params = sum((p.numel() for p in model.parameters()))
@@ -104,7 +104,7 @@ def train_epoch(model, train_loader, optimizer, scaler, device, epoch):
         with torch.amp.autocast(device_type='cuda' if device.type == 'cuda' else 'cpu'):
             loss, stats, weight = model(speech_mix=mix, speech_mix_lengths=mix_lengths, speech_ref1=speech_ref1, speech_ref1_lengths=ref_lengths, speech_ref2=speech_ref2, speech_ref2_lengths=ref_lengths, speech_ref3=speech_ref3, speech_ref3_lengths=ref_lengths)
         if torch.isnan(loss) or torch.isinf(loss):
-            print(f'\n⚠️ Warning: NaN/Inf loss detected at batch {batch_idx}, skipping...')
+            print(f'\nWarning: NaN/Inf loss detected at batch {batch_idx}, skipping...')
             continue
         scaler.scale(loss).backward()
         scaler.unscale_(optimizer)
@@ -157,9 +157,9 @@ def main():
     train_loader = DataLoader(train_dataset, batch_size=TRAIN_CONFIG['batch_size'], shuffle=True, num_workers=8, pin_memory=True, persistent_workers=True)
     dev_loader = DataLoader(dev_dataset, batch_size=TRAIN_CONFIG['batch_size'], shuffle=False, num_workers=8, pin_memory=True, persistent_workers=True)
     test_loader = DataLoader(test_dataset, batch_size=TRAIN_CONFIG['batch_size'], shuffle=False, num_workers=8, pin_memory=True, persistent_workers=True)
-    print(f'✓ Train batches: {len(train_loader)}')
-    print(f'✓ Dev batches: {len(dev_loader)}')
-    print(f'✓ Test batches: {len(test_loader)}')
+    print(f'Train batches: {len(train_loader)}')
+    print(f'Dev batches: {len(dev_loader)}')
+    print(f'Test batches: {len(test_loader)}')
     model = build_model(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=TRAIN_CONFIG['learning_rate'], betas=(0.9, 0.999), eps=1e-08, weight_decay=TRAIN_CONFIG['weight_decay'])
     scaler = torch.amp.GradScaler('cuda')
@@ -180,27 +180,27 @@ def main():
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 torch.save({'epoch': epoch, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'scheduler_state_dict': scheduler.state_dict(), 'scaler_state_dict': scaler.state_dict(), 'train_loss': train_loss, 'val_loss': val_loss, 'best_val_loss': best_val_loss, 'config': MODEL_CONFIG, 'train_losses': train_losses, 'val_losses': val_losses}, CHECKPOINT_DIR / 'best_model.pth')
-                print(f'  ✓ Best model saved (SI-SNR: {-val_loss:.2f} dB)')
+                print(f'  Best model saved (SI-SNR: {-val_loss:.2f} dB)')
             if epoch % 10 == 0:
                 checkpoint_path = CHECKPOINT_DIR / f'checkpoint_epoch_{epoch}.pth'
                 torch.save({'epoch': epoch, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'scaler_state_dict': scaler.state_dict(), 'train_loss': train_loss, 'val_loss': val_loss, 'train_losses': train_losses, 'val_losses': val_losses}, checkpoint_path)
-                print(f'  ✓ Checkpoint saved: epoch_{epoch}.pth')
+                print(f'  Checkpoint saved: epoch_{epoch}.pth')
             save_training_curves(train_losses, val_losses, CHECKPOINT_DIR)
             save_training_history(train_losses, val_losses, CHECKPOINT_DIR)
     except KeyboardInterrupt:
-        print('\n⚠️ Training interrupted by user')
+        print('\nTraining interrupted by user')
         if train_losses:
             interrupted_path = CHECKPOINT_DIR / 'checkpoint_interrupted.pth'
             torch.save({'epoch': epoch, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'scheduler_state_dict': scheduler.state_dict(), 'scaler_state_dict': scaler.state_dict(), 'train_loss': train_losses[-1], 'val_loss': val_losses[-1] if val_losses else float('inf'), 'best_val_loss': best_val_loss, 'train_losses': train_losses, 'val_losses': val_losses}, interrupted_path)
-            print(f'  ✓ Interrupted checkpoint saved: checkpoint_interrupted.pth (epoch {epoch})')
+            print(f'  Interrupted checkpoint saved: checkpoint_interrupted.pth (epoch {epoch})')
     finally:
         if train_losses:
             print('\n' + '=' * 60)
             print(f'Best validation SI-SNR: {-best_val_loss:.2f} dB')
             save_training_curves(train_losses, val_losses, CHECKPOINT_DIR)
-            print(f'✓ Training curves saved')
+            print(f'Training curves saved')
             with open(CHECKPOINT_DIR / 'config.json', 'w') as f:
                 json.dump({'model_config': MODEL_CONFIG, 'train_config': TRAIN_CONFIG, 'best_val_loss': best_val_loss, 'best_si_snr': -best_val_loss}, f, indent=2)
-            print(f'✓ Config saved')
+            print(f'Config saved')
 if __name__ == '__main__':
     main()

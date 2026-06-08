@@ -53,9 +53,9 @@ def load_pretrained_weights(model, pretrained_path, device):
     print('\n' + '=' * 60)
     print('Transfer Learning Summary')
     print('=' * 60)
-    print(f'✓ Loaded: {len(compatible_dict)} layers from pretrained model')
+    print(f'Loaded: {len(compatible_dict)} layers from pretrained model')
     if reinitialized_layers:
-        print(f'\n🔄 Reinitialized {len(reinitialized_layers)} layer(s) due to shape mismatch:')
+        print(f'\nReinitialized {len(reinitialized_layers)} layer(s) due to shape mismatch:')
         for name, old_shape, new_shape in reinitialized_layers:
             print(f'   {name}: {old_shape} → {new_shape}')
     if skipped_layers:
@@ -68,14 +68,14 @@ def build_model(device, use_transfer=True):
     print('Building SkiM Attention 3-Speaker Model (Transfer Learning)')
     print('=' * 60)
     encoder = ConvEncoder(channel=MODEL_CONFIG['encoder']['channel'], kernel_size=MODEL_CONFIG['encoder']['kernel_size'], stride=MODEL_CONFIG['encoder']['stride'])
-    print(f"✓ Encoder: Conv1D ({MODEL_CONFIG['encoder']['channel']} channels)")
+    print(f"Encoder: Conv1D ({MODEL_CONFIG['encoder']['channel']} channels)")
     separator = SkiMAttentionSeparator(input_dim=MODEL_CONFIG['separator']['input_dim'], causal=MODEL_CONFIG['separator']['causal'], num_spk=MODEL_CONFIG['separator']['num_spk'], predict_noise=MODEL_CONFIG['separator']['predict_noise'], nonlinear=MODEL_CONFIG['separator']['nonlinear'], layer=MODEL_CONFIG['separator']['layer'], unit=MODEL_CONFIG['separator']['unit'], segment_size=MODEL_CONFIG['separator']['segment_size'], dropout=MODEL_CONFIG['separator']['dropout'], num_heads=MODEL_CONFIG['separator']['num_heads'], mem_type=MODEL_CONFIG['separator']['mem_type'], seg_overlap=MODEL_CONFIG['separator']['seg_overlap'])
-    print(f"✓ Separator: SkiM Attention ({MODEL_CONFIG['separator']['layer']} layers, {MODEL_CONFIG['separator']['unit']} units, {MODEL_CONFIG['separator']['num_heads']} heads, {MODEL_CONFIG['separator']['num_spk']} speakers)")
+    print(f"Separator: SkiM Attention ({MODEL_CONFIG['separator']['layer']} layers, {MODEL_CONFIG['separator']['unit']} units, {MODEL_CONFIG['separator']['num_heads']} heads, {MODEL_CONFIG['separator']['num_spk']} speakers)")
     decoder = ConvDecoder(channel=MODEL_CONFIG['decoder']['channel'], kernel_size=MODEL_CONFIG['decoder']['kernel_size'], stride=MODEL_CONFIG['decoder']['stride'])
-    print(f'✓ Decoder: ConvTranspose1D')
+    print(f'Decoder: ConvTranspose1D')
     criterion = SISNRLoss()
     pit_wrapper = PITSolver(criterion=criterion)
-    print(f'✓ Loss: SI-SNR with PIT')
+    print(f'Loss: SI-SNR with PIT')
     model = ESPnetEnhancementModel(encoder=encoder, separator=separator, decoder=decoder, mask_module=None, loss_wrappers=[pit_wrapper], loss_type='si_snr')
     model = model.to(device)
     if use_transfer:
@@ -174,7 +174,7 @@ def reset_layerscale_gates(model):
         if 'gamma_attn' in name or 'gamma_ffn' in name:
             param.data.zero_()
             zeroed += 1
-    print(f'  ✓ Reset {zeroed} LayerScale gates to 0.0 (fresh start for 3-speaker)')
+    print(f'  Reset {zeroed} LayerScale gates to 0.0 (fresh start for 3-speaker)')
     return model
 
 def main(resume_from=None, num_epochs=None, reset_gates=False):
@@ -202,21 +202,21 @@ def main(resume_from=None, num_epochs=None, reset_gates=False):
     train_loader = DataLoader(train_dataset, batch_size=TRAIN_CONFIG['batch_size'], shuffle=True, num_workers=8, pin_memory=True, persistent_workers=True)
     dev_loader = DataLoader(dev_dataset, batch_size=TRAIN_CONFIG['batch_size'], shuffle=False, num_workers=8, pin_memory=True, persistent_workers=True)
     test_loader = DataLoader(test_dataset, batch_size=TRAIN_CONFIG['batch_size'], shuffle=False, num_workers=8, pin_memory=True, persistent_workers=True)
-    print(f'✓ Train batches: {len(train_loader)}')
-    print(f'✓ Dev batches: {len(dev_loader)}')
-    print(f'✓ Test batches: {len(test_loader)}')
+    print(f'Train batches: {len(train_loader)}')
+    print(f'Dev batches: {len(dev_loader)}')
+    print(f'Test batches: {len(test_loader)}')
     model = build_model(device, use_transfer=True)
     gate_params = [p for n, p in model.named_parameters() if 'gamma_attn' in n or 'gamma_ffn' in n]
     other_params = [p for n, p in model.named_parameters() if 'gamma_attn' not in n and 'gamma_ffn' not in n]
     optimizer = torch.optim.Adam([{'params': other_params, 'lr': TRAIN_CONFIG['learning_rate']}, {'params': gate_params, 'lr': TRAIN_CONFIG['learning_rate'] * 0.1}], betas=(0.9, 0.999), eps=1e-08, weight_decay=TRAIN_CONFIG['weight_decay'])
-    print(f"✓ Optimizer: LR={TRAIN_CONFIG['learning_rate']} (main), {TRAIN_CONFIG['learning_rate'] * 0.1} (gates)")
+    print(f"Optimizer: LR={TRAIN_CONFIG['learning_rate']} (main), {TRAIN_CONFIG['learning_rate'] * 0.1} (gates)")
     scaler = torch.amp.GradScaler('cuda')
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, min_lr=1e-06, verbose=True)
     best_val_loss = float('inf')
     start_epoch = 1
     target_num_epochs = num_epochs if num_epochs is not None else TRAIN_CONFIG['num_epochs']
     if reset_gates and resume_from is None:
-        print('\n🔄 Resetting LayerScale gates (--reset-gates):')
+        print('\nResetting LayerScale gates (--reset-gates):')
         model = reset_layerscale_gates(model)
     if resume_from is not None:
         resume_path = project_root / resume_from
@@ -224,20 +224,20 @@ def main(resume_from=None, num_epochs=None, reset_gates=False):
         ckpt = torch.load(resume_path, map_location=device)
         model.load_state_dict(ckpt['model_state_dict'])
         if reset_gates:
-            print('\n🔄 Resetting LayerScale gates after resume (--reset-gates):')
+            print('\nResetting LayerScale gates after resume (--reset-gates):')
             model = reset_layerscale_gates(model)
         if 'optimizer_state_dict' in ckpt:
             try:
                 optimizer.load_state_dict(ckpt['optimizer_state_dict'])
             except ValueError:
-                print('  ⚠️ Optimizer state incompatible (param group count changed), using fresh optimizer')
+                print('  Optimizer state incompatible (param group count changed), using fresh optimizer')
         if 'scheduler_state_dict' in ckpt:
             scheduler.load_state_dict(ckpt['scheduler_state_dict'])
         if 'scaler_state_dict' in ckpt:
             scaler.load_state_dict(ckpt['scaler_state_dict'])
         best_val_loss = ckpt.get('best_val_loss', ckpt.get('val_loss', best_val_loss))
         start_epoch = ckpt.get('epoch', 0) + 1
-        print(f'✓ Resumed from epoch {start_epoch - 1}.')
+        print(f'Resumed from epoch {start_epoch - 1}.')
     train_losses, val_losses = load_training_history(CHECKPOINT_DIR)
     if not train_losses and resume_from is not None and ('train_losses' in ckpt):
         train_losses = ckpt['train_losses']
@@ -259,27 +259,27 @@ def main(resume_from=None, num_epochs=None, reset_gates=False):
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 torch.save({'epoch': epoch, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'scheduler_state_dict': scheduler.state_dict(), 'scaler_state_dict': scaler.state_dict(), 'train_loss': train_loss, 'val_loss': val_loss, 'best_val_loss': best_val_loss, 'config': MODEL_CONFIG, 'transfer_config': TRANSFER_CONFIG, 'train_losses': train_losses, 'val_losses': val_losses}, CHECKPOINT_DIR / 'best_model.pth')
-                print(f'  ✓ Best model saved (SI-SNR: {-val_loss:.2f} dB)')
+                print(f'  Best model saved (SI-SNR: {-val_loss:.2f} dB)')
             if epoch % 10 == 0:
                 torch.save({'epoch': epoch, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'scheduler_state_dict': scheduler.state_dict(), 'scaler_state_dict': scaler.state_dict(), 'train_loss': train_loss, 'val_loss': val_loss, 'best_val_loss': best_val_loss, 'config': MODEL_CONFIG, 'train_losses': train_losses, 'val_losses': val_losses}, CHECKPOINT_DIR / f'checkpoint_epoch_{epoch}.pth')
-                print(f'  ✓ Checkpoint saved: epoch_{epoch}.pth')
+                print(f'  Checkpoint saved: epoch_{epoch}.pth')
             save_training_curves(train_losses, val_losses, CHECKPOINT_DIR)
             save_training_history(train_losses, val_losses, CHECKPOINT_DIR)
     except KeyboardInterrupt:
-        print('\n⚠️ Training interrupted by user')
+        print('\nTraining interrupted by user')
         if train_losses:
             interrupted_path = CHECKPOINT_DIR / 'checkpoint_interrupted.pth'
             torch.save({'epoch': epoch, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'scheduler_state_dict': scheduler.state_dict(), 'scaler_state_dict': scaler.state_dict(), 'train_loss': train_losses[-1], 'val_loss': val_losses[-1] if val_losses else float('inf'), 'best_val_loss': best_val_loss, 'train_losses': train_losses, 'val_losses': val_losses}, interrupted_path)
-            print(f'  ✓ Interrupted checkpoint saved: checkpoint_interrupted.pth (epoch {epoch})')
+            print(f'  Interrupted checkpoint saved: checkpoint_interrupted.pth (epoch {epoch})')
     finally:
         if train_losses:
             print('\n' + '=' * 60)
             print(f'Best validation SI-SNR: {-best_val_loss:.2f} dB')
             save_training_curves(train_losses, val_losses, CHECKPOINT_DIR)
-            print(f'✓ Training curves saved')
+            print(f'Training curves saved')
             with open(CHECKPOINT_DIR / 'config.json', 'w') as f:
                 json.dump({'model_config': MODEL_CONFIG, 'train_config': TRAIN_CONFIG, 'transfer_config': TRANSFER_CONFIG, 'best_val_loss': best_val_loss, 'best_si_snr': -best_val_loss}, f, indent=2)
-            print(f'✓ Config saved')
+            print(f'Config saved')
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train SkiM Attention 3-speaker model with transfer learning')
     parser.add_argument('--resume-from', type=str, default=None)

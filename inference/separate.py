@@ -35,7 +35,6 @@ import torch
 import librosa
 from tqdm import tqdm
 
-# --- Self-contained: pakai implementation milik repository ini sendiri -------
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
@@ -48,8 +47,6 @@ from implementation.skim_attention.skim_attention_separator import (
 
 SAMPLE_RATE = 16000
 
-# Default konfigurasi separator bila checkpoint lama tidak menyimpan 'config'.
-# Nilai ini sesuai konfigurasi training (lihat train/*/MODEL_CONFIG).
 DEFAULT_CONFIG = {
     "encoder": {"channel": 256, "kernel_size": 16, "stride": 8},
     "decoder": {"channel": 256, "kernel_size": 16, "stride": 8},
@@ -68,7 +65,6 @@ DEFAULT_CONFIG = {
     },
 }
 
-# kwargs yang valid untuk masing-masing separator
 _SKIM_KEYS = {
     "input_dim", "causal", "num_spk", "predict_noise", "nonlinear",
     "layer", "unit", "segment_size", "dropout", "mem_type", "seg_overlap",
@@ -92,7 +88,6 @@ def load_model(checkpoint_path: Path, device: torch.device):
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
     state_dict = ckpt.get("model_state_dict", ckpt)
 
-    # Baca config dari checkpoint; fallback ke default training bila tidak ada.
     config = ckpt.get("config", DEFAULT_CONFIG)
     enc_cfg = config.get("encoder", DEFAULT_CONFIG["encoder"])
     dec_cfg = config.get("decoder", DEFAULT_CONFIG["decoder"])
@@ -111,7 +106,6 @@ def load_model(checkpoint_path: Path, device: torch.device):
         kwargs = {k: v for k, v in sep_cfg.items() if k in _SKIM_KEYS}
         separator = SkiMSeparator(**kwargs)
 
-    # Bobot tersimpan dengan prefix 'encoder.', 'separator.', 'decoder.'
     def submodule_state(prefix: str) -> dict:
         return {
             k[len(prefix) + 1:]: v
@@ -134,7 +128,7 @@ def load_mixture(path: Path) -> np.ndarray:
     """Muat audio mixture, konversi ke mono 16 kHz float32."""
     audio, sr = sf.read(path)
     audio = audio.astype(np.float32)
-    if audio.ndim > 1:  # stereo -> mono
+    if audio.ndim > 1:
         audio = audio.mean(axis=1)
     if sr != SAMPLE_RATE:
         audio = librosa.resample(
@@ -146,7 +140,7 @@ def load_mixture(path: Path) -> np.ndarray:
 @torch.no_grad()
 def separate(encoder, separator, decoder, mixture: np.ndarray, device):
     """Pisahkan satu mixture menjadi daftar sumber (list of np.ndarray)."""
-    mix = torch.from_numpy(mixture).unsqueeze(0).to(device)  # (1, T)
+    mix = torch.from_numpy(mixture).unsqueeze(0).to(device)
     lengths = torch.tensor([mix.size(1)], dtype=torch.long, device=device)
 
     feats, flens = encoder(mix, lengths)

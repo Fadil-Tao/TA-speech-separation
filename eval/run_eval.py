@@ -9,8 +9,6 @@ import numpy as np
 import soundfile as sf
 import torch
 from tqdm import tqdm
-# Repository ini berdiri sendiri (isolated): gunakan implementation milik
-# repo ini, bukan repo induk. ROOT = root TA-speech-separation.
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from espnet2.enh.encoder.conv_encoder import ConvEncoder
@@ -25,17 +23,12 @@ MODEL_LIST = EVAL_DIR / 'best-model-list.txt'
 CKPT_CACHE = EVAL_DIR / 'ckpts'
 RESULTS_DIR = EVAL_DIR / 'results'
 AUDIO_LIMIT_DEFAULT = 450
-# Dataset & checkpoint berada di LUAR repo ini -> default relatif ke ROOT,
-# tetapi sebaiknya di-override via --dataset-dir dan --checkpoints-dir.
 DEFAULT_DATASET_DIR = ROOT / 'dataset' / 'synthetic'
 DEFAULT_CHECKPOINTS_DIR = ROOT / 'checkpoints'
-# Diisi di main() dari argumen CLI.
 CHECKPOINTS_DIR = DEFAULT_CHECKPOINTS_DIR
 TEST_ROOT = {}
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-# Default sesuai konfigurasi training (train/*/MODEL_CONFIG). Dipakai hanya
-# sebagai fallback bila checkpoint tidak menyimpan 'config'.
 DEFAULT_CONFIG = {'encoder': {'channel': 256, 'kernel_size': 16, 'stride': 8}, 'decoder': {'channel': 256, 'kernel_size': 16, 'stride': 8}, 'separator': {'input_dim': 256, 'causal': False, 'layer': 4, 'unit': 256, 'segment_size': 150, 'dropout': 0.1, 'mem_type': 'hc', 'seg_overlap': False, 'nonlinear': 'relu'}}
 
 _SKIM_KEYS = {'input_dim', 'causal', 'num_spk', 'predict_noise', 'nonlinear', 'layer', 'unit', 'segment_size', 'dropout', 'mem_type', 'seg_overlap'}
@@ -85,21 +78,18 @@ def discover_local_models() -> list[tuple[str, str]]:
     """
     out = []
     for ckpt in sorted(CHECKPOINTS_DIR.glob('*/*/best_model.pth')):
-        spk = ckpt.parent.parent.name      # mis. '2speaker'
-        arch = ckpt.parent.name            # mis. 'skim-attention'
+        spk = ckpt.parent.parent.name
+        arch = ckpt.parent.name
         out.append((f'{spk}-{arch}', ''))
     return out
 
 def ensure_checkpoint(name: str, gdrive_id: str) -> Path:
-    # 1) checkpoint lokal di folder konvensional
     local = local_ckpt_path(name)
     if local.exists():
         return local
-    # 2) cache hasil download sebelumnya
     target = CKPT_CACHE / name / 'best_model.pth'
     if target.exists():
         return target
-    # 3) download dari Google Drive (perlu gdrive_id)
     if not gdrive_id:
         raise FileNotFoundError(f'checkpoint lokal tidak ditemukan untuk {name} (dicari di {local}) dan tidak ada gdrive_id')
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -141,8 +131,6 @@ def best_pit(ests, refs) -> tuple[float, tuple[int, ...]]:
 def build_model(num_spk: int, arch: str, ckpt_path: Path):
     state = torch.load(ckpt_path, map_location=device, weights_only=False)
     sd = state.get('model_state_dict', state)
-    # Utamakan config yang tersimpan di checkpoint (mis. segment_size, unit) agar
-    # arsitektur evaluasi persis sama dengan saat training. Fallback ke default.
     cfg = state.get('config') or build_config(num_spk, arch)
     sep_cfg = dict(cfg['separator'])
     sep_cfg.setdefault('num_spk', num_spk)
@@ -255,7 +243,6 @@ def main():
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     CKPT_CACHE.mkdir(parents=True, exist_ok=True)
 
-    # Sumber daftar model: --local (auto-discover) ATAU best-model-list.txt
     entries = discover_local_models() if args.local else read_model_list()
     if not entries:
         sys.exit('tidak ada model untuk dievaluasi. Pakai --local untuk memindai checkpoint lokal, atau sediakan best-model-list.txt')

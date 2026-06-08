@@ -59,9 +59,9 @@ def load_pretrained_weights(model, pretrained_path, device):
     print('\n' + '=' * 60)
     print('Transfer Learning Summary')
     print('=' * 60)
-    print(f'✓ Loaded: {len(compatible_dict)} layers from pretrained model')
+    print(f'Loaded: {len(compatible_dict)} layers from pretrained model')
     if reinitialized_layers:
-        print(f'\n🔄 Reinitialized {len(reinitialized_layers)} layer(s) due to shape mismatch:')
+        print(f'\nReinitialized {len(reinitialized_layers)} layer(s) due to shape mismatch:')
         for name, old_shape, new_shape in reinitialized_layers:
             print(f'   {name}: {old_shape} → {new_shape}')
     if skipped_layers:
@@ -74,14 +74,14 @@ def build_model(device, use_transfer=True):
     print('Building SkiM 3-Speaker Model (Transfer Learning)')
     print('=' * 60)
     encoder = ConvEncoder(channel=MODEL_CONFIG['encoder']['channel'], kernel_size=MODEL_CONFIG['encoder']['kernel_size'], stride=MODEL_CONFIG['encoder']['stride'])
-    print(f"✓ Encoder: Conv1D ({MODEL_CONFIG['encoder']['channel']} channels)")
+    print(f"Encoder: Conv1D ({MODEL_CONFIG['encoder']['channel']} channels)")
     separator = SkiMSeparator(input_dim=MODEL_CONFIG['separator']['input_dim'], causal=MODEL_CONFIG['separator']['causal'], num_spk=MODEL_CONFIG['separator']['num_spk'], predict_noise=MODEL_CONFIG['separator']['predict_noise'], nonlinear=MODEL_CONFIG['separator']['nonlinear'], layer=MODEL_CONFIG['separator']['layer'], unit=MODEL_CONFIG['separator']['unit'], segment_size=MODEL_CONFIG['separator']['segment_size'], dropout=MODEL_CONFIG['separator']['dropout'], mem_type=MODEL_CONFIG['separator']['mem_type'], seg_overlap=MODEL_CONFIG['separator']['seg_overlap'])
-    print(f"✓ Separator: SkiM ({MODEL_CONFIG['separator']['layer']} layers, {MODEL_CONFIG['separator']['unit']} units, {MODEL_CONFIG['separator']['num_spk']} speakers)")
+    print(f"Separator: SkiM ({MODEL_CONFIG['separator']['layer']} layers, {MODEL_CONFIG['separator']['unit']} units, {MODEL_CONFIG['separator']['num_spk']} speakers)")
     decoder = ConvDecoder(channel=MODEL_CONFIG['decoder']['channel'], kernel_size=MODEL_CONFIG['decoder']['kernel_size'], stride=MODEL_CONFIG['decoder']['stride'])
-    print(f'✓ Decoder: ConvTranspose1D')
+    print(f'Decoder: ConvTranspose1D')
     criterion = SISNRLoss()
     pit_wrapper = PITSolver(criterion=criterion)
-    print(f'✓ Loss: SI-SNR with PIT')
+    print(f'Loss: SI-SNR with PIT')
     model = ESPnetEnhancementModel(encoder=encoder, separator=separator, decoder=decoder, mask_module=None, loss_wrappers=[pit_wrapper], loss_type='si_snr')
     model = model.to(device)
     if use_transfer:
@@ -201,9 +201,9 @@ def main(resume_from=None, num_epochs=None):
     train_loader = DataLoader(train_dataset, batch_size=TRAIN_CONFIG['batch_size'], shuffle=True, num_workers=8, pin_memory=True, persistent_workers=True)
     dev_loader = DataLoader(dev_dataset, batch_size=TRAIN_CONFIG['batch_size'], shuffle=False, num_workers=8, pin_memory=True, persistent_workers=True)
     test_loader = DataLoader(test_dataset, batch_size=TRAIN_CONFIG['batch_size'], shuffle=False, num_workers=8, pin_memory=True, persistent_workers=True)
-    print(f'✓ Train batches: {len(train_loader)}')
-    print(f'✓ Dev batches: {len(dev_loader)}')
-    print(f'✓ Test batches: {len(test_loader)}')
+    print(f'Train batches: {len(train_loader)}')
+    print(f'Dev batches: {len(dev_loader)}')
+    print(f'Test batches: {len(test_loader)}')
     model = build_model(device, use_transfer=resume_from is None)
     best_val_loss = float('inf')
     start_epoch = 1
@@ -218,7 +218,7 @@ def main(resume_from=None, num_epochs=None):
         model.load_state_dict(ckpt['model_state_dict'])
         best_val_loss = ckpt.get('best_val_loss', ckpt.get('val_loss', best_val_loss))
         start_epoch = ckpt.get('epoch', 0) + 1
-        print(f'✓ Resumed from epoch {start_epoch - 1}.')
+        print(f'Resumed from epoch {start_epoch - 1}.')
     optimizer = torch.optim.Adam(model.parameters(), lr=TRAIN_CONFIG['learning_rate'], betas=(0.9, 0.999), eps=1e-08, weight_decay=TRAIN_CONFIG['weight_decay'])
     scaler = torch.amp.GradScaler('cuda')
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, min_lr=1e-06, verbose=True)
@@ -254,17 +254,17 @@ def main(resume_from=None, num_epochs=None):
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 torch.save({'epoch': epoch, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'scheduler_state_dict': scheduler.state_dict(), 'scaler_state_dict': scaler.state_dict(), 'train_loss': train_loss, 'val_loss': val_loss, 'best_val_loss': best_val_loss, 'config': MODEL_CONFIG, 'transfer_config': TRANSFER_CONFIG, 'train_losses': train_losses, 'val_losses': val_losses}, CHECKPOINT_DIR / 'best_model.pth')
-                print(f'  ✓ Best model saved (SI-SNR: {-val_loss:.2f} dB)')
+                print(f'  Best model saved (SI-SNR: {-val_loss:.2f} dB)')
             if epoch % 10 == 0:
                 torch.save({'epoch': epoch, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'scheduler_state_dict': scheduler.state_dict(), 'scaler_state_dict': scaler.state_dict(), 'train_loss': train_loss, 'val_loss': val_loss, 'best_val_loss': best_val_loss, 'config': MODEL_CONFIG, 'train_losses': train_losses, 'val_losses': val_losses}, CHECKPOINT_DIR / f'checkpoint_epoch_{epoch}.pth')
-                print(f'  ✓ Checkpoint saved: epoch_{epoch}.pth')
+                print(f'  Checkpoint saved: epoch_{epoch}.pth')
             save_training_curves(train_losses, val_losses, CHECKPOINT_DIR)
             save_training_history(train_losses, val_losses, CHECKPOINT_DIR)
     except KeyboardInterrupt:
         print('\n Training interrupted by user')
         if train_losses:
             torch.save({'epoch': epoch, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'scheduler_state_dict': scheduler.state_dict(), 'scaler_state_dict': scaler.state_dict(), 'train_loss': train_losses[-1], 'val_loss': val_losses[-1] if val_losses else float('inf'), 'best_val_loss': best_val_loss, 'train_losses': train_losses, 'val_losses': val_losses}, CHECKPOINT_DIR / 'checkpoint_interrupted.pth')
-            print(f'  ✓ Interrupted checkpoint saved (epoch {epoch})')
+            print(f'  Interrupted checkpoint saved (epoch {epoch})')
     finally:
         if train_losses:
             print('\n' + '=' * 60)
