@@ -1,0 +1,298 @@
+# -*- coding: utf-8 -*-
+"""Exercise the Bash workflow without network, audio dependencies, or a GPU.
+
+Run: python -m unittest discover -s tests -p 'test_setup_and_train.py' -v
+The real generator main functions run with a small file-writing test double.
+"""
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+import zipfile
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+REMOTE = 'https://github.com/Fadil-Tao/TA-speech-separation.git'
+
+FAKE_PYTHON = r'''import ast
+import json
+import os
+import shlex
+import shutil
+import sys
+from pathlib import Path
+
+def record(event, **values):
+    with open(os.environ['FAKE_TRACE'], 'a') as stream:
+        stream.write(json.dumps({'event': event, **values}) + '\n')
+
+args = sys.argv[1:]
+if Path(sys.argv[0]).name == 'gdown':
+    output = args[args.index('-O') + 1]
+    shutil.copyfile(os.environ['FAKE_ZIP'], output)
+    record('download')
+    sys.exit(0)
+if args[:2] == ['-m', 'venv']:
+    root = Path(args[2])
+    (root / 'bin').mkdir(parents=True)
+    for name in ('python', 'gdown'):
+        target = root / 'bin' / name
+        shutil.copyfile(sys.argv[0], target)
+        target.chmod(0o755)
+    (root / 'bin' / 'activate').write_text(
+        'export PATH=' + shlex.quote(str(root.resolve() / 'bin')) + ':"$PATH"\n'
+    )
+    sys.exit(0)
+if args[:2] == ['-m', 'pip']:
+    sys.exit(0)
+if args and args[0] == '-c' and 'sys.version_info' in args[1]:
+    sys.exit(0)
+if args and args[0].startswith('dataset/generator/'):
+    import argparse
+    file = Path(args[0])
+    tree = ast.parse(file.read_text())
+    main = next(node for node in tree.body
+                if isinstance(node, ast.FunctionDef) and node.name == 'main')
+    speakers = 3 if '3spk' in file.name else 2
+
+    class Generator:
+        def __init__(self, **kwargs):
+            self.output = Path(kwargs['output_dir'])
+
+        def split_utterances(self, **kwargs):
+            return ({}, {}, {})
+
+        def generate_mixtures_from_utterances(self, **kwargs):
+            split, count = kwargs['split_name'], kwargs['num_mixtures']
+            record('generate', speakers=speakers, split=split)
+            for name in ['mix'] + [f's{i}' for i in range(1, speakers + 1)]:
+                directory = self.output / split / name
+                directory.mkdir(parents=True, exist_ok=True)
+                for index in range(count):
+                    (directory / f'{index}.wav').touch()
+            return count
+
+        def generate_dataset_info(self, train, dev, test, duration):
+            (self.output / 'dataset_info.json').write_text(
+                json.dumps({'train': train, 'dev': dev, 'test': test})
+            )
+
+    namespace = {
+        'argparse': argparse,
+        'get_raw_dir': lambda value: value,
+        'get_synthetic_dir': lambda name, value: value,
+        f'TITMLMixGenerator{speakers}Spk': Generator,
+    }
+    sys.argv = args
+    exec(compile(ast.Module(body=[main], type_ignores=[]), str(file), 'exec'),
+         namespace)
+    namespace['main']()
+    sys.exit(0)
+if args and args[0] == '-u':
+    file = Path(args[1])
+    tree = ast.parse(file.read_text())
+    flags = {
+        node.args[0].value for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == 'add_argument' and node.args
+    }
+    assert '--num-epochs' in flags
+    if '--resume-from' in args:
+        assert '--resume-from' in flags
+    dataset_call = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == 'DynamicMixDataset'
+    )
+    epoch_size_node = next(keyword.value for keyword in dataset_call.keywords
+                           if keyword.arg == 'epoch_size')
+    epoch_size = eval(compile(ast.Expression(epoch_size_node), str(file), 'eval'),
+                      {'os': os})
+    epochs = int(args[args.index('--num-epochs') + 1])
+    if os.environ.get('FAKE_INTERRUPT') == '1':
+        epochs -= 1
+    speakers, variant = file.parts[1].replace('speaker', ''), file.parts[2]
+    if '_transfer.py' in file.name:
+        variant += '-transfer'
+    destination = Path('checkpoints') / f'{speakers}speaker' / variant
+    destination.mkdir(parents=True, exist_ok=True)
+    history = {'train_losses': [-1] * epochs, 'val_losses': [-1] * epochs}
+    (destination / 'training_history.json').write_text(json.dumps(history))
+    (destination / 'best_model.pth').write_text(json.dumps({'epoch': epochs}))
+    record('train', speakers=speakers, variant=variant, args=args,
+           epoch_size=epoch_size)
+    sys.exit(0)
+os.execv(os.environ['REAL_PYTHON'], [os.environ['REAL_PYTHON']] + args)
+'''
+
+
+class SetupAndTrainTest(unittest.TestCase):
+    """Validate clone, extraction, split generation, model routing, and reruns."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.source = self.root / 'source'
+        self.source.mkdir()
+        for name in ('train', 'dataset/generator', 'utils'):
+            shutil.copytree(
+                ROOT / name, self.source / name,
+                ignore=shutil.ignore_patterns('__pycache__'),
+            )
+        self.git('init', '--initial-branch=main')
+        self.git('add', '.')
+        self.git('-c', 'user.name=Fixture', '-c', 'user.email=test@example.test',
+                 'commit', '-m', 'test fixture')
+        self.script = self.root / 'setup_and_train.sh'
+        shutil.copyfile(ROOT / 'setup_and_train.sh', self.script)
+        self.python = self.root / 'fake-python'
+        self.python.write_text(f'#!{sys.executable}\n{FAKE_PYTHON}')
+        self.python.chmod(0o755)
+        modules = self.root / 'modules'
+        modules.mkdir()
+        (modules / 'pyzipper.py').write_text(
+            'from zipfile import ZipFile as AESZipFile\n'
+        )
+        (modules / 'torch.py').write_text(
+            'import json\n'
+            'from pathlib import Path\n'
+            'def load(path, **kwargs):\n'
+            '    return json.loads(Path(path).read_text())\n'
+        )
+        self.archive = self.root / 'fixture.zip'
+        with zipfile.ZipFile(self.archive, 'w') as archive:
+            for speaker in ('m01', 'm02', 'f01'):
+                archive.writestr(f'TITML/Speech/{speaker}/audio.wav', b'audio')
+        self.trace = self.root / 'trace.jsonl'
+        self.env = {
+            **os.environ,
+            'REAL_PYTHON': sys.executable,
+            'PYTHONPATH': str(modules),
+            'FAKE_TRACE': str(self.trace),
+            'FAKE_ZIP': str(self.archive),
+            'GIT_CONFIG_COUNT': '1',
+            'GIT_CONFIG_KEY_0': f'url.{self.source.as_uri()}.insteadOf',
+            'GIT_CONFIG_VALUE_0': REMOTE,
+        }
+
+    def git(self, *args):
+        subprocess.run(
+            ['git', '-C', str(self.source), *args],
+            check=True, capture_output=True, text=True,
+        )
+
+    def run_wizard(self, model=6, epochs=1, configure=True, hours='1'):
+        self.project = self.root / f'project with spaces {model}'
+        answers = [str(self.project), str(self.python), 'cpu', '0',
+                   str(model), str(epochs)]
+        if model in (5, 6):
+            answers.append('1')
+        answers.extend([str(hours), ''])
+        return subprocess.run(
+            ['bash', str(self.script), *(['--configure'] if configure else [])],
+            input='\n'.join(answers) + '\n' if configure else '',
+            capture_output=True, text=True, env=self.env, timeout=30,
+        )
+
+    def events(self):
+        if not self.trace.exists():
+            return []
+        return [json.loads(line) for line in self.trace.read_text().splitlines()]
+
+    def test_all_six_models_and_only_dev_test(self):
+        for model in range(1, 7):
+            with self.subTest(model=model):
+                result = self.run_wizard(model)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn('[7/7] Finished', result.stdout)
+                for info in self.project.glob('dataset/synthetic/*/dataset_info.json'):
+                    self.assertEqual(json.loads(info.read_text())['train'], 0)
+                    self.assertFalse((info.parent / 'train').exists())
+        self.assertTrue(all(event['split'] in ('dev', 'test')
+                            for event in self.events()
+                            if event['event'] == 'generate'))
+        training = [e for e in self.events() if e['event'] == 'train']
+        self.assertTrue(all(event['epoch_size'] == 576 for event in training))
+
+    def test_default_ten_hours_controls_train_dev_and_test(self):
+        result = self.run_wizard(hours='')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('Total dataset hours', result.stdout)
+        self.assertIn('Dynamic train: 5760', result.stdout)
+        for info in self.project.glob('dataset/synthetic/*/dataset_info.json'):
+            self.assertEqual(json.loads(info.read_text()),
+                             {'train': 0, 'dev': 720, 'test': 720})
+            self.assertFalse((info.parent / 'train').exists())
+        training = [e for e in self.events() if e['event'] == 'train']
+        self.assertEqual(len(training), 2)
+        self.assertTrue(all(event['epoch_size'] == 5760 for event in training))
+        config = self.root / 'setup_and_train.env'
+        self.assertIn('TARGET_HOURS=10\n', config.read_text())
+        before = self.events()
+        result = self.run_wizard(configure=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.events(), before)
+
+    def test_transfer_pretraining_and_saved_settings_rerun(self):
+        result = self.run_wizard()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        training = [e for e in self.events() if e['event'] == 'train']
+        self.assertEqual([e['variant'] for e in training],
+                         ['skim-attention', 'skim-attention-transfer'])
+        before = self.events()
+        result = self.run_wizard(configure=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.events(), before)
+        config = self.root / 'setup_and_train.env'
+        self.assertEqual(config.stat().st_mode & 0o777, 0o600)
+        self.assertNotIn('PASSWORD', config.read_text())
+
+    def test_changing_hours_preserves_existing_data_and_checkpoints(self):
+        result = self.run_wizard(model=1, hours='1')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        before = self.events()
+        result = self.run_wizard(model=1, hours='10')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('was not prepared for 10h', result.stderr)
+        self.assertEqual(self.events(), before)
+
+    def test_interrupted_training_resumes_without_false_finish(self):
+        self.env['FAKE_INTERRUPT'] = '1'
+        result = self.run_wizard(model=1, epochs=2)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn('[7/7] Finished', result.stdout)
+        self.env.pop('FAKE_INTERRUPT')
+        result = self.run_wizard(model=1, configure=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        training = [e for e in self.events() if e['event'] == 'train']
+        self.assertIn('--resume-from', training[-1]['args'])
+
+    def test_old_remote_clone_is_rejected_before_setup(self):
+        (self.source / 'train/datasets_utils.py').write_text('pass\n')
+        self.git('add', '.')
+        self.git('-c', 'user.name=Fixture', '-c', 'user.email=test@example.test',
+                 'commit', '-m', 'old static fixture')
+        result = self.run_wizard(model=1)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Clone lacks DynamicMixDataset', result.stderr)
+        self.assertEqual(self.events(), [])
+
+    def test_zip_traversal_is_rejected(self):
+        with zipfile.ZipFile(self.archive, 'a') as archive:
+            archive.writestr('../escape.txt', 'unsafe')
+        result = self.run_wizard(model=1)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Unsafe ZIP entry', result.stderr)
+        self.assertFalse((self.project / 'dataset/raw/escape.txt').exists())
+
+
+if __name__ == '__main__':
+    unittest.main()

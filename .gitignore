@@ -3,3 +3,10 @@ __pycache__/
 .venv/
 *.pth
 checkpoints/
+setup_and_train.env
+setup_and_train.env.tmp
+dataset/raw/
+dataset/synthetic/
+dataset/zips/
+eval/results/
+separated/
