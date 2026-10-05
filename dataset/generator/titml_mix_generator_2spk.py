@@ -239,9 +239,9 @@ def main():
     generator = TITMLMixGenerator2Spk(titml_dir=args.titml_dir, output_dir=args.output_dir, target_sr=16000, seed=args.seed)
     only_splits = set(args.only_splits) if args.only_splits else {'train', 'dev', 'test'}
     train_utts, dev_utts, test_utts = generator.split_utterances(train_ratio=args.train_ratio, dev_ratio=args.dev_ratio, test_ratio=1 - args.train_ratio - args.dev_ratio)
-    train_count = generator.generate_mixtures_from_utterances(utterances_by_speaker=train_utts, split_name='train', num_mixtures=train_mixtures, target_duration=args.target_duration, gender_balance=True) if 'train' in only_splits else train_mixtures
-    dev_count = generator.generate_mixtures_from_utterances(utterances_by_speaker=dev_utts, split_name='dev', num_mixtures=dev_mixtures, target_duration=args.target_duration, gender_balance=True) if 'dev' in only_splits else dev_mixtures
-    test_count = generator.generate_mixtures_from_utterances(utterances_by_speaker=test_utts, split_name='test', num_mixtures=test_mixtures, target_duration=args.target_duration, gender_balance=True) if 'test' in only_splits else test_mixtures
+    train_count = generator.generate_mixtures_from_utterances(utterances_by_speaker=train_utts, split_name='train', num_mixtures=train_mixtures, target_duration=args.target_duration, gender_balance=True) if 'train' in only_splits else 0
+    dev_count = generator.generate_mixtures_from_utterances(utterances_by_speaker=dev_utts, split_name='dev', num_mixtures=dev_mixtures, target_duration=args.target_duration, gender_balance=True) if 'dev' in only_splits else 0
+    test_count = generator.generate_mixtures_from_utterances(utterances_by_speaker=test_utts, split_name='test', num_mixtures=test_mixtures, target_duration=args.target_duration, gender_balance=True) if 'test' in only_splits else 0
     generator.generate_dataset_info(train_count, dev_count, test_count, args.target_duration)
     print('\n' + '=' * 60)
     print('Dataset Generation Complete!')
@@ -249,10 +249,10 @@ def main():
     print(f'\nDataset location: {args.output_dir}')
     print('\nDataset structure:')
     print(f'  TITML-2spk/')
-    print(f'  ├── train/ ({train_count} mixtures, ~{train_count * args.target_duration / 3600:.1f} hours)')
-    print(f'  │   ├── mix/   <- 2-speaker mixture')
-    print(f'  │   ├── s1/    <- speaker 1 (reference)')
-    print(f'  │   └── s2/    <- speaker 2 (SNR-scaled)')
+    if 'train' in only_splits:
+        print(f'  ├── train/ ({train_count} mixtures, ~{train_count * args.target_duration / 3600:.1f} hours)')
+    else:
+        print('  Train mixtures not generated; training uses on-the-fly mixing.')
     print(f'  ├── dev/   ({dev_count} mixtures, ~{dev_count * args.target_duration / 3600:.1f} hours)')
     print(f'  ├── test/  ({test_count} mixtures, ~{test_count * args.target_duration / 3600:.1f} hours)')
     print(f'  └── dataset_info.json')

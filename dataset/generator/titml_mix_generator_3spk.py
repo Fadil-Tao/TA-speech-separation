@@ -221,6 +221,7 @@ def main():
     parser.add_argument('--train-ratio', type=float, default=0.8, help='Ratio of training data (default: 0.8)')
     parser.add_argument('--dev-ratio', type=float, default=0.1, help='Ratio of dev data (default: 0.1)')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility (default: 42)')
+    parser.add_argument('--only-splits', type=str, nargs='+', choices=['train', 'dev', 'test'], default=None, help='Only generate specified splits (e.g. --only-splits dev test)')
     args = parser.parse_args()
     args.titml_dir = str(get_raw_dir(args.titml_dir))
     args.output_dir = str(get_synthetic_dir('TITML-3spk', args.output_dir))
@@ -252,10 +253,11 @@ def main():
     print(f'  Test:  {test_mixtures} ({(1 - args.train_ratio - args.dev_ratio) * 100:.0f}%)')
     print('=' * 60)
     generator = TITMLMixGenerator3Spk(titml_dir=args.titml_dir, output_dir=args.output_dir, target_sr=16000, seed=args.seed)
+    only_splits = set(args.only_splits) if args.only_splits else {'train', 'dev', 'test'}
     train_utts, dev_utts, test_utts = generator.split_utterances(train_ratio=args.train_ratio, dev_ratio=args.dev_ratio, test_ratio=1 - args.train_ratio - args.dev_ratio)
-    train_count = generator.generate_mixtures_from_utterances(utterances_by_speaker=train_utts, split_name='train', num_mixtures=train_mixtures, target_duration=args.target_duration, gender_balance=True)
-    dev_count = generator.generate_mixtures_from_utterances(utterances_by_speaker=dev_utts, split_name='dev', num_mixtures=dev_mixtures, target_duration=args.target_duration, gender_balance=True)
-    test_count = generator.generate_mixtures_from_utterances(utterances_by_speaker=test_utts, split_name='test', num_mixtures=test_mixtures, target_duration=args.target_duration, gender_balance=True)
+    train_count = generator.generate_mixtures_from_utterances(utterances_by_speaker=train_utts, split_name='train', num_mixtures=train_mixtures, target_duration=args.target_duration, gender_balance=True) if 'train' in only_splits else 0
+    dev_count = generator.generate_mixtures_from_utterances(utterances_by_speaker=dev_utts, split_name='dev', num_mixtures=dev_mixtures, target_duration=args.target_duration, gender_balance=True) if 'dev' in only_splits else 0
+    test_count = generator.generate_mixtures_from_utterances(utterances_by_speaker=test_utts, split_name='test', num_mixtures=test_mixtures, target_duration=args.target_duration, gender_balance=True) if 'test' in only_splits else 0
     generator.generate_dataset_info(train_count, dev_count, test_count, args.target_duration)
     print('\n' + '=' * 60)
     print('Dataset Generation Complete!')
@@ -263,11 +265,10 @@ def main():
     print(f'\nDataset location: {args.output_dir}')
     print('\nDataset structure:')
     print(f'  TITML-3spk/')
-    print(f'  ├── train/ ({train_count} mixtures, ~{train_count * args.target_duration / 3600:.1f} hours)')
-    print(f'  │   ├── mix/   <- 3-speaker mixture')
-    print(f'  │   ├── s1/    <- speaker 1 (reference)')
-    print(f'  │   ├── s2/    <- speaker 2 (SNR-scaled)')
-    print(f'  │   └── s3/    <- speaker 3 (SNR-scaled)')
+    if 'train' in only_splits:
+        print(f'  ├── train/ ({train_count} mixtures, ~{train_count * args.target_duration / 3600:.1f} hours)')
+    else:
+        print('  Train mixtures not generated; training uses on-the-fly mixing.')
     print(f'  ├── dev/   ({dev_count} mixtures, ~{dev_count * args.target_duration / 3600:.1f} hours)')
     print(f'  ├── test/  ({test_count} mixtures, ~{test_count * args.target_duration / 3600:.1f} hours)')
     print(f'  └── dataset_info.json')
