@@ -516,6 +516,9 @@ class SetupAndTrainTest(unittest.TestCase):
         self.assertEqual((backups[0] / 'best_model.pth').read_bytes(), old_best)
         checkpoint = json.loads((folder / 'checkpoint_epoch_5.pth').read_text())
         self.assertEqual(checkpoint['best_val_loss'], -1)
+        originals = list(folder.glob('checkpoint_before_resume.*'))
+        self.assertEqual(len(originals), 1)
+        self.assertEqual(json.loads(originals[0].read_text()), snapshot)
         result = self.run_wizard(model=1, configure=False)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         training = [e for e in self.events() if e['event'] == 'train'][-1]

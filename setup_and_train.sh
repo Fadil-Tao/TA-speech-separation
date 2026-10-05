@@ -478,6 +478,10 @@ PY
     fi
     command=(python -u "$script" --num-epochs "$epochs")
     if [[ -n "$resume" ]]; then
+        if [[ ! -f "$checkpoint_dir/best_model.pth" ]]; then
+            backup=$(mktemp "$checkpoint_dir/checkpoint_before_resume.XXXXXX")
+            cp -- "$resume" "$backup"
+        fi
         if [[ -f "$checkpoint_dir/training_history.json" ]]; then
             backup=$(mktemp "$checkpoint_dir/training_history.backup.XXXXXX")
             cp -- "$checkpoint_dir/training_history.json" "$backup"
