@@ -46,11 +46,23 @@ Jalankan wizard dari checkout repositori yang sudah diperbarui:
 bash setup_and_train.sh
 ```
 
-Pada penggunaan pertama, wizard menanyakan folder proyek, Python 3.10/3.11,
-CUDA atau CPU, GPU, pilihan model, jumlah epoch, total jam dataset, serta URL
+Pada penggunaan pertama, wizard menanyakan folder proyek, CUDA atau CPU,
+GPU, pilihan model, jumlah epoch, total jam dataset, serta URL
 atau path ZIP TITML. Source ZIP default berasal dari konfigurasi proyek.
 Password ZIP terenkripsi diminta secara tersembunyi jika belum tersedia;
 password tidak disimpan dalam berkas konfigurasi.
+
+Python dipilih otomatis, tanpa pertanyaan versi atau path. Jika Python
+3.10/3.11 dengan dukungan `venv` tersedia, instalasi Python dilewati. Jika
+belum tersedia (misalnya instance Vast.ai memakai Python 3.12), wizard
+menggunakan `uv` yang sudah ada atau memasang `uv` di `~/.local/bin`, lalu
+memasang Python 3.11. Python sistem dan shell profile tidak diubah.
+Bootstrap ini membutuhkan `curl` dan akses internet ke Astral/GitHub.
+
+Venv yang kompatibel digunakan kembali. Venv rusak atau memakai versi
+Python lain dipindahkan ke `.venv.backup.*/original`, kemudian `.venv`
+baru dibuat. Dataset dan checkpoint tidak dipindahkan atau dihapus.
+Konfigurasi lama dengan path Python yang tidak sesuai diperbaiki otomatis.
 
 Wizard menjalankan tujuh tahap: clone atau gunakan checkout yang sudah ada,
 buat venv, unduh ZIP, ekstrak dataset mentah, buat **dev dan test saja**,

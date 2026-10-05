@@ -11,10 +11,11 @@ case "${1:-}" in
     --help|-h)
         printf '%s\n' \
             'Usage: bash setup_and_train.sh [--configure]' \
-            'First run asks for paths, Python, model, epochs, total dataset hours, and ZIP source.' \
+            'First run asks for paths, model, epochs, total dataset hours, and ZIP source.' \
+            'Python 3.10/3.11 is detected automatically; missing Python 3.11 is installed with uv.' \
             'Later runs reuse setup_and_train.env and resume completed checkpoints.' \
             'Use --configure to change saved choices. ZIP passwords are not saved.' \
-            'Requires Bash, Git, Python 3.10/3.11, and an NVIDIA GPU for CUDA mode.'
+            'Requires Bash, Git, curl for automatic Python installation, and an NVIDIA GPU for CUDA mode.'
         exit 0 ;;
     '') ;;
     *) printf 'Unknown option: %s\n' "$1" >&2; exit 2 ;;
@@ -27,6 +28,42 @@ ask() {
     printf '%s [%s]: ' "$question" "$default"
     IFS= read -r reply || die 'Input closed. Run script in an interactive terminal.'
     printf -v "$variable" '%s' "${reply:-$default}"
+}
+
+python_is_compatible() {
+    [[ -n "$1" ]] && command -v "$1" >/dev/null 2>&1 &&
+        "$1" -c 'import sys, venv, ensurepip; sys.exit(0 if (3, 10) <= sys.version_info[:2] <= (3, 11) else 1)' \
+        >/dev/null 2>&1
+}
+
+ensure_python() {
+    local candidate uv_bin
+    for candidate in "${PYTHON_BIN:-}" "$PROJECT_DIR/.venv/bin/python" \
+        python3.11 python3.10 python3 python; do
+        if python_is_compatible "$candidate"; then
+            PYTHON_BIN=$(command -v "$candidate")
+            printf 'Using compatible Python: %s\n' "$PYTHON_BIN"
+            return
+        fi
+    done
+
+    printf 'No compatible Python found; installing Python 3.11 alongside system Python.\n'
+    uv_bin=$(command -v uv || true)
+    if [[ -z "$uv_bin" ]]; then
+        uv_bin="$HOME/.local/bin/uv"
+        if [[ ! -x "$uv_bin" ]]; then
+            command -v curl >/dev/null 2>&1 || die 'Install curl to bootstrap Python automatically.'
+            printf 'Installing uv in %s (shell profiles unchanged).\n' "$HOME/.local/bin"
+            if ! curl -LsSf --retry 3 https://astral.sh/uv/install.sh |
+                env UV_INSTALL_DIR="$HOME/.local/bin" UV_NO_MODIFY_PATH=1 sh; then
+                die 'Could not install uv. Check network access and rerun.'
+            fi
+        fi
+    fi
+    "$uv_bin" python install 3.11 || die 'Could not install Python 3.11. Check network access and rerun.'
+    PYTHON_BIN=$("$uv_bin" python find --managed-python 3.11) || die 'Could not locate installed Python 3.11.'
+    python_is_compatible "$PYTHON_BIN" || die 'Installed Python lacks required venv/ensurepip support.'
+    printf 'Using installed Python: %s\n' "$PYTHON_BIN"
 }
 
 if [[ -f "$CONFIG_FILE" && "$CONFIGURE" == 0 ]]; then
@@ -42,14 +79,6 @@ else
     fi
     ask PROJECT_DIR 'Project folder (clone here, or reuse existing clean checkout)' \
         "$default_project"
-    default_python=python3
-    for candidate in python3.10 python3.11; do
-        if command -v "$candidate" >/dev/null 2>&1; then
-            default_python=$candidate
-            break
-        fi
-    done
-    ask PYTHON_BIN 'Python executable (3.10 or 3.11)' "$default_python"
     ask DEVICE 'PyTorch build: cuda or cpu' cuda
     ask GPU_ID 'CUDA GPU index (ignored for cpu)' 0
     printf '\nChoose model:\n'
@@ -80,11 +109,11 @@ for value in "$EPOCHS" "$PRETRAIN_EPOCHS"; do
     [[ "$value" =~ ^[1-9][0-9]*$ ]] || die 'Epoch counts must be positive integers.'
 done
 [[ "$TARGET_HOURS" =~ ^[0-9]+([.][0-9]+)?$ ]] || die 'Dataset hours must be a positive number.'
-command -v "$PYTHON_BIN" >/dev/null 2>&1 || die "Python executable not found: $PYTHON_BIN"
-"$PYTHON_BIN" -c 'import sys; assert (3, 10) <= sys.version_info[:2] <= (3, 11), "Use Python 3.10 or 3.11 for this legacy ESPnet setup"'
+PROJECT_DIR=${PROJECT_DIR/#\~/$HOME}
+ensure_python
+PYTHON_BIN=$("$PYTHON_BIN" -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$PYTHON_BIN")
 "$PYTHON_BIN" -c 'import math,sys; hours=float(sys.argv[1]); assert math.isfinite(hours) and hours >= 1, "Use at least 1 finite dataset hour"' "$TARGET_HOURS"
 TRAIN_EPOCH_SIZE=$("$PYTHON_BIN" -c 'import sys; total=int(float(sys.argv[1])*3600/5); print(int(total*0.8))' "$TARGET_HOURS")
-PROJECT_DIR=${PROJECT_DIR/#\~/$HOME}
 PROJECT_DIR=$("$PYTHON_BIN" -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).resolve())' "$PROJECT_DIR")
 ZIP_SOURCE=${ZIP_SOURCE/#\~/$HOME}
 if [[ -f "$ZIP_SOURCE" ]]; then
@@ -149,10 +178,20 @@ if '--num-epochs' not in path.read_text():
 PY
 
 stage 2 'Set up virtual environment and dependencies'
-[[ -x .venv/bin/python ]] || "$PYTHON_BIN" -m venv .venv
+if [[ -e .venv || -L .venv ]] && ! python_is_compatible .venv/bin/python; then
+    backup=$(mktemp -d "$PROJECT_DIR/.venv.backup.XXXXXX")
+    mv -- .venv "$backup/original"
+    printf 'Preserved incompatible virtual environment: %s/original\n' "$backup"
+fi
+if python_is_compatible .venv/bin/python; then
+    printf 'Reusing compatible virtual environment; creation skipped.\n'
+else
+    "$PYTHON_BIN" -m venv .venv
+fi
 # shellcheck disable=SC1091
 source .venv/bin/activate
-python -c 'import sys; assert (3, 10) <= sys.version_info[:2] <= (3, 11), "Existing .venv needs Python 3.10/3.11; choose a fresh checkout or recreate the venv"'
+python_is_compatible python || die 'Virtual environment failed Python compatibility check.'
+python -c 'import pip' >/dev/null 2>&1 || python -m ensurepip --upgrade
 python -m pip install --upgrade pip wheel
 index=https://download.pytorch.org/whl/cu124
 [[ "$DEVICE" == cuda ]] || index=https://download.pytorch.org/whl/cpu

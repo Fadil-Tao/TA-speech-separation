@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 .venv/
+.venv.backup.*/
 *.pth
 checkpoints/
 setup_and_train.env

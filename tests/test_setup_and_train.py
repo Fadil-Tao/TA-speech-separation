@@ -7,6 +7,7 @@ The real generator main functions run with a small file-writing test double.
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -32,6 +33,19 @@ def record(event, **values):
         stream.write(json.dumps({'event': event, **values}) + '\n')
 
 args = sys.argv[1:]
+if Path(sys.argv[0]).name == 'uv':
+    managed = Path(os.environ['FAKE_MANAGED']) / 'python3.11'
+    if args == ['python', 'install', '3.11']:
+        managed.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(sys.argv[0], managed)
+        managed.chmod(0o755)
+        record('python_install')
+    elif args == ['python', 'find', '--managed-python', '3.11']:
+        assert managed.exists()
+        print(managed)
+    else:
+        raise AssertionError(f'Unexpected uv command: {args}')
+    sys.exit(0)
 if Path(sys.argv[0]).name == 'gdown':
     output = args[args.index('-O') + 1]
     shutil.copyfile(os.environ['FAKE_ZIP'], output)
@@ -47,10 +61,22 @@ if args[:2] == ['-m', 'venv']:
     (root / 'bin' / 'activate').write_text(
         'export PATH=' + shlex.quote(str(root.resolve() / 'bin')) + ':"$PATH"\n'
     )
+    record('venv_create')
     sys.exit(0)
-if args[:2] == ['-m', 'pip']:
+if (args[:2] in (['-m', 'pip'], ['-m', 'ensurepip'])
+        or args == ['-c', 'import pip']):
     sys.exit(0)
 if args and args[0] == '-c' and 'sys.version_info' in args[1]:
+    invalid = (
+        os.environ.get('FAKE_BAD_SYSTEM') == '1'
+        and Path(sys.argv[0]).parent == Path(os.environ['FAKE_BIN'])
+    ) or (Path(sys.argv[0]).parent.parent / '.invalid-python').exists()
+    if invalid:
+        if 'assert' in args[1]:
+            raise AssertionError(
+                'Use Python 3.10 or 3.11 for this legacy ESPnet setup'
+            )
+        sys.exit(1)
     sys.exit(0)
 if args and args[0].startswith('dataset/generator/'):
     import argparse
@@ -153,9 +179,31 @@ class SetupAndTrainTest(unittest.TestCase):
                  'commit', '-m', 'test fixture')
         self.script = self.root / 'setup_and_train.sh'
         shutil.copyfile(ROOT / 'setup_and_train.sh', self.script)
-        self.python = self.root / 'fake-python'
+        self.bin = self.root / 'bin'
+        self.bin.mkdir()
+        for name in ('bash', 'sh', 'git', 'dirname', 'mkdir', 'mv', 'touch',
+                     'tee', 'env', 'mktemp', 'cp', 'chmod'):
+            (self.bin / name).symlink_to(shutil.which(name))
+        self.python = self.bin / 'python3.11'
         self.python.write_text(f'#!{sys.executable}\n{FAKE_PYTHON}')
         self.python.chmod(0o755)
+        for name in ('python', 'python3', 'python3.10'):
+            shutil.copyfile(self.python, self.bin / name)
+            (self.bin / name).chmod(0o755)
+        curl = self.bin / 'curl'
+        curl.write_text(
+            f'#!{sys.executable}\n'
+            'import json, os, sys\n'
+            'assert "https://astral.sh/uv/install.sh" in sys.argv\n'
+            'with open(os.environ["FAKE_TRACE"], "a") as stream:\n'
+            '    stream.write(json.dumps({"event": "uv_install"}) + "\\n")\n'
+            'if os.environ.get("FAKE_INSTALL_FAILURE") == "1":\n'
+            '    sys.exit(22)\n'
+            "print('mkdir -p \"$UV_INSTALL_DIR\"')\n"
+            "print('cp \"$FAKE_TEMPLATE\" \"$UV_INSTALL_DIR/uv\"')\n"
+            "print('chmod +x \"$UV_INSTALL_DIR/uv\"')\n"
+        )
+        curl.chmod(0o755)
         modules = self.root / 'modules'
         modules.mkdir()
         (modules / 'pyzipper.py').write_text(
@@ -178,6 +226,11 @@ class SetupAndTrainTest(unittest.TestCase):
             'PYTHONPATH': str(modules),
             'FAKE_TRACE': str(self.trace),
             'FAKE_ZIP': str(self.archive),
+            'FAKE_BIN': str(self.bin),
+            'FAKE_MANAGED': str(self.root / 'managed python'),
+            'FAKE_TEMPLATE': str(self.python),
+            'HOME': str(self.root / 'home'),
+            'PATH': str(self.bin),
             'GIT_CONFIG_COUNT': '1',
             'GIT_CONFIG_KEY_0': f'url.{self.source.as_uri()}.insteadOf',
             'GIT_CONFIG_VALUE_0': REMOTE,
@@ -191,7 +244,7 @@ class SetupAndTrainTest(unittest.TestCase):
 
     def run_wizard(self, model=6, epochs=1, configure=True, hours='1'):
         self.project = self.root / f'project with spaces {model}'
-        answers = [str(self.project), str(self.python), 'cpu', '0',
+        answers = [str(self.project), 'cpu', '0',
                    str(model), str(epochs)]
         if model in (5, 6):
             answers.append('1')
@@ -206,6 +259,85 @@ class SetupAndTrainTest(unittest.TestCase):
         if not self.trace.exists():
             return []
         return [json.loads(line) for line in self.trace.read_text().splitlines()]
+
+    def test_python_312_automatically_installs_311(self):
+        self.env['FAKE_BAD_SYSTEM'] = '1'
+        shutil.copyfile(self.python, self.bin / 'uv')
+        (self.bin / 'uv').chmod(0o755)
+        self.project = self.root / 'project with spaces 1'
+        choices = {
+            'PROJECT_DIR': str(self.project), 'PYTHON_BIN': str(self.python),
+            'DEVICE': 'cpu', 'GPU_ID': '0', 'MODEL': '1', 'EPOCHS': '1',
+            'PRETRAIN_EPOCHS': '1', 'TARGET_HOURS': '1',
+            'ZIP_SOURCE': 'https://drive.google.com/uc?id=fixture',
+        }
+        (self.root / 'setup_and_train.env').write_text(''.join(
+            f'{key}={shlex.quote(value)}\n' for key, value in choices.items()
+        ))
+        result = self.run_wizard(model=1, configure=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('[7/7] Finished', result.stdout)
+        self.assertEqual(sum(e['event'] == 'python_install'
+                             for e in self.events()), 1)
+        self.assertNotIn('Python executable', result.stdout)
+        before = self.events()
+        result = self.run_wizard(model=1, configure=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.events(), before)
+
+    def test_missing_uv_is_bootstrapped_without_changing_system_python(self):
+        self.env['FAKE_BAD_SYSTEM'] = '1'
+        original = self.python.read_bytes()
+        result = self.run_wizard(model=1)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.python.read_bytes(), original)
+        events = [e['event'] for e in self.events()]
+        self.assertEqual(events.count('uv_install'), 1)
+        self.assertEqual(events.count('python_install'), 1)
+        self.assertTrue((self.root / 'home/.local/bin/uv').exists())
+        before = self.events()
+        result = self.run_wizard(model=1, configure=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.events(), before)
+
+    def test_correct_python_and_venv_skip_installation(self):
+        result = self.run_wizard(model=1)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        events = [e['event'] for e in self.events()]
+        self.assertNotIn('uv_install', events)
+        self.assertNotIn('python_install', events)
+        self.assertEqual(events.count('venv_create'), 1)
+        self.assertNotIn('Python executable', result.stdout)
+        before = self.events()
+        result = self.run_wizard(model=1, configure=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('creation skipped', result.stdout)
+        self.assertEqual(self.events(), before)
+
+    def test_incompatible_venv_is_preserved_and_replaced(self):
+        result = self.run_wizard(model=1)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        venv = self.project / '.venv'
+        (venv / '.invalid-python').touch()
+        (venv / 'user-notes.txt').write_text('keep this')
+        result = self.run_wizard(model=1, configure=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        backups = list(self.project.glob('.venv.backup.*/original'))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual((backups[0] / 'user-notes.txt').read_text(), 'keep this')
+        self.assertFalse((venv / '.invalid-python').exists())
+        self.assertEqual(sum(e['event'] == 'venv_create'
+                             for e in self.events()), 2)
+        self.assertEqual(sum(e['event'] == 'train'
+                             for e in self.events()), 1)
+
+    def test_failed_bootstrap_stops_before_clone(self):
+        self.env.update(FAKE_BAD_SYSTEM='1', FAKE_INSTALL_FAILURE='1')
+        result = self.run_wizard(model=1)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Could not install uv', result.stderr)
+        self.assertFalse(self.project.exists())
+        self.assertEqual(self.events(), [{'event': 'uv_install'}])
 
     def test_all_six_models_and_only_dev_test(self):
         for model in range(1, 7):
