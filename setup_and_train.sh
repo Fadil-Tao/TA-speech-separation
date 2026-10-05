@@ -198,7 +198,7 @@ index=https://download.pytorch.org/whl/cu124
 python -m pip install torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1 \
     --index-url "$index"
 python -m pip install 'numpy<1.24' espnet==202304 espnet_model_zoo \
-    librosa==0.9.2 soundfile matplotlib tqdm mir_eval pesq pystoi gdown pyzipper
+    librosa==0.9.2 soundfile matplotlib tqdm mir_eval pesq pystoi 'gdown>=6,<7' pyzipper
 if [[ "$DEVICE" == cuda ]]; then
     export CUDA_VISIBLE_DEVICES="$GPU_ID"
     python -c 'import torch; assert torch.cuda.is_available(), "CUDA unavailable; check NVIDIA driver/GPU or reconfigure for CPU"; print("GPU:", torch.cuda.get_device_name(0))'
@@ -227,7 +227,7 @@ else
     mkdir -p -- "$(dirname -- "$ZIP_PATH")"
     case "$ZIP_SOURCE" in
         *drive.google.com/*)
-            gdown --fuzzy "$ZIP_SOURCE" -O "$ZIP_PATH.partial" ;;
+            python -m gdown "$ZIP_SOURCE" -O "$ZIP_PATH.partial" ;;
         https://*|http://*)
             command -v curl >/dev/null 2>&1 || die 'Install curl for direct ZIP URLs.'
             curl --fail --location --retry 3 "$ZIP_SOURCE" -o "$ZIP_PATH.partial" ;;

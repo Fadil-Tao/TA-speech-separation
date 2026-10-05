@@ -46,10 +46,17 @@ if Path(sys.argv[0]).name == 'uv':
     else:
         raise AssertionError(f'Unexpected uv command: {args}')
     sys.exit(0)
-if Path(sys.argv[0]).name == 'gdown':
-    output = args[args.index('-O') + 1]
-    shutil.copyfile(os.environ['FAKE_ZIP'], output)
-    record('download')
+if Path(sys.argv[0]).name == 'gdown' or args[:2] == ['-m', 'gdown']:
+    import argparse
+    if args[:2] == ['-m', 'gdown']:
+        args = args[2:]
+    parser = argparse.ArgumentParser(prog='gdown')
+    parser.add_argument('url_or_id')
+    parser.add_argument('-O', required=True)
+    parsed = parser.parse_args(args)
+    shutil.copyfile(os.environ['FAKE_ZIP'], parsed.O)
+    record('download', args=args,
+           via_module=Path(sys.argv[0]).name != 'gdown')
     sys.exit(0)
 if args[:2] == ['-m', 'venv']:
     root = Path(args[2])
@@ -338,6 +345,18 @@ class SetupAndTrainTest(unittest.TestCase):
         self.assertIn('Could not install uv', result.stderr)
         self.assertFalse(self.project.exists())
         self.assertEqual(self.events(), [{'event': 'uv_install'}])
+
+    def test_gdown_download_works_without_removed_fuzzy_option(self):
+        result = self.run_wizard(model=1)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        download = next(e for e in self.events()
+                        if e['event'] == 'download')
+        self.assertTrue(download['via_module'])
+        self.assertNotIn('--fuzzy', download['args'])
+        self.assertIn('1ETEzZhm5s5XAp1tKUtSj9zq4Ic-7tben',
+                      download['args'][0])
+        self.assertTrue((self.project / 'dataset/zips/TITML-IDN.zip').exists())
+        self.assertIn('[7/7] Finished', result.stdout)
 
     def test_all_six_models_and_only_dev_test(self):
         for model in range(1, 7):

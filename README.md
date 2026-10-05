@@ -121,7 +121,7 @@ pip install torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1 \
     --index-url https://download.pytorch.org/whl/cu124
 pip install espnet==202304 espnet_model_zoo
 pip install "numpy<1.24" soundfile librosa==0.9.2 matplotlib tqdm
-pip install mir_eval pesq pystoi gdown pyzipper
+pip install mir_eval pesq pystoi 'gdown>=6,<7' pyzipper
 ```
 
 GPU CUDA sangat disarankan untuk pelatihan. Inferensi dapat dijalankan pada
