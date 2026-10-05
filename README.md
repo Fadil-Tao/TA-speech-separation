@@ -87,9 +87,37 @@ bash setup_and_train.sh --configure
 
 Pilihan model mencakup enam konfigurasi pada bagian Pelatihan. Untuk transfer
 learning, wizard melatih model dua pembicara terlebih dahulu jika checkpoint
-sumber belum ada. Run berikutnya melanjutkan checkpoint epoch lengkap yang
-tersedia; run yang sudah mencapai jumlah epoch tujuan dilewati. Log disimpan
-dalam `run.log` di folder checkpoint masing-masing model.
+sumber belum ada. Jika hasil pelatihan sudah ada, wizard menampilkan daftar
+`best_model.pth` dan `checkpoint_epoch_*.pth` beserta epoch yang tersimpan.
+Pilih nomor checkpoint untuk melanjutkan, `n` untuk mulai ulang, atau `s`
+untuk melewati pelatihan tanpa mengubah hasil. Checkpoint dengan epoch
+terbesar ditampilkan pertama; best model tidak selalu berasal dari epoch
+terakhir. `checkpoint_interrupted.pth` tidak ditawarkan karena epoch yang
+tercantum dapat masih belum selesai.
+
+Saat melanjutkan atau mulai ulang, hanya total epoch tujuan yang ditanyakan,
+bukan seluruh pertanyaan setup. Total ini bukan jumlah epoch tambahan:
+checkpoint epoch 20 dengan tujuan 100 melanjutkan epoch 21–100. Tujuan harus
+melebihi epoch checkpoint. Nilai tujuan baru disimpan kembali dalam format
+`setup_and_train.env` yang sama; konfigurasi lama tetap dapat digunakan.
+Tanpa input (stdin ditutup), default lama dipertahankan: melanjutkan
+checkpoint lengkap terbaru jika belum mencapai tujuan, atau melewati run
+yang sudah selesai.
+
+Pilihan mulai ulang memindahkan folder checkpoint model tersebut ke
+`<model>.backup.*/original`; dataset, venv, dan checkpoint model lain tetap
+digunakan. Pada transfer learning, mulai ulang model tiga pembicara tetap
+menggunakan bobot pretrained dua pembicara. Saat resume, histori loss
+diselaraskan dengan checkpoint yang dipilih dan histori sebelumnya disalin
+ke `training_history.backup.*`. Jika memilih epoch yang lebih lama daripada
+checkpoint terbaru, run sebelumnya juga dicadangkan; hanya snapshot sampai
+epoch pilihan yang dibawa ke run aktif. Ini mencegah restart berikutnya
+melompat ke bobot dari masa depan run lama. Jika best model lama berada
+setelah epoch pilihan, checkpoint pilihan menjadi best awal; ambang loss
+diambil dari validasi checkpoint itu jika tersedia, atau dari validasi baru.
+Checkpoint lama tanpa histori loss dapat
+dilanjutkan tanpa membuat nilai loss lama yang palsu. Log disimpan dalam
+`run.log` di folder checkpoint masing-masing model.
 
 Gunakan folder proyek baru jika mengubah total jam dan folder sebelumnya
 sudah berisi dev/test atau checkpoint. Wizard tidak menimpa dataset yang

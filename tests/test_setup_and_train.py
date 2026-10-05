@@ -156,11 +156,24 @@ if args and args[0] == '-u':
         variant += '-transfer'
     destination = Path('checkpoints') / f'{speakers}speaker' / variant
     destination.mkdir(parents=True, exist_ok=True)
-    history = {'train_losses': [-1] * epochs, 'val_losses': [-1] * epochs}
+    history = {'train_losses': [], 'val_losses': []}
+    resume_epoch = 0
+    if '--resume-from' in args:
+        resume = Path(args[args.index('--resume-from') + 1])
+        resume_epoch = json.loads(resume.read_text()).get('epoch', 0)
+        path = destination / 'training_history.json'
+        if path.exists():
+            history = json.loads(path.read_text())
+    history_before = {name: list(values) for name, values in history.items()}
+    for values in history.values():
+        values.extend([-1] * max(0, epochs - resume_epoch))
     (destination / 'training_history.json').write_text(json.dumps(history))
-    (destination / 'best_model.pth').write_text(json.dumps({'epoch': epochs}))
+    (destination / 'best_model.pth').write_text(json.dumps({
+        'epoch': epochs, **history,
+    }))
     record('train', speakers=speakers, variant=variant, args=args,
-           epoch_size=epoch_size)
+           epoch_size=epoch_size, history_before=history_before,
+           resume_epoch=resume_epoch)
     sys.exit(0)
 os.execv(os.environ['REAL_PYTHON'], [os.environ['REAL_PYTHON']] + args)
 '''
@@ -221,6 +234,8 @@ class SetupAndTrainTest(unittest.TestCase):
             'from pathlib import Path\n'
             'def load(path, **kwargs):\n'
             '    return json.loads(Path(path).read_text())\n'
+            'def save(value, path):\n'
+            '    Path(path).write_text(json.dumps(value))\n'
         )
         self.archive = self.root / 'fixture.zip'
         with zipfile.ZipFile(self.archive, 'w') as archive:
@@ -249,16 +264,18 @@ class SetupAndTrainTest(unittest.TestCase):
             check=True, capture_output=True, text=True,
         )
 
-    def run_wizard(self, model=6, epochs=1, configure=True, hours='1'):
+    def run_wizard(self, model=6, epochs=1, configure=True, hours='1',
+                   training_answers=()):
         self.project = self.root / f'project with spaces {model}'
         answers = [str(self.project), 'cpu', '0',
                    str(model), str(epochs)]
         if model in (5, 6):
             answers.append('1')
         answers.extend([str(hours), ''])
+        answers = (answers if configure else []) + list(training_answers)
         return subprocess.run(
             ['bash', str(self.script), *(['--configure'] if configure else [])],
-            input='\n'.join(answers) + '\n' if configure else '',
+            input='\n'.join(answers) + '\n' if answers else '',
             capture_output=True, text=True, env=self.env, timeout=30,
         )
 
@@ -425,6 +442,205 @@ class SetupAndTrainTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         training = [e for e in self.events() if e['event'] == 'train']
         self.assertIn('--resume-from', training[-1]['args'])
+
+    def test_resume_menu_reuses_settings_and_selects_latest_saved_epoch(self):
+        result = self.run_wizard(model=1, epochs=5)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        folder = self.project / 'checkpoints/2speaker/skim'
+        for epoch in (10, 20):
+            (folder / f'checkpoint_epoch_{epoch}.pth').write_text(json.dumps({
+                'epoch': epoch, 'train_losses': [-1] * epoch,
+                'val_losses': [-1] * epoch,
+            }))
+        before = self.events()
+        result = self.run_wizard(model=1, configure=False,
+                                 training_answers=['1', '25'])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('epoch 20', result.stdout)
+        self.assertIn('epoch 10', result.stdout)
+        self.assertIn('best_model.pth', result.stdout)
+        self.assertNotIn('first-run setup', result.stdout)
+        self.assertNotIn('Total dataset hours', result.stdout)
+        training = self.events()[len(before):]
+        self.assertEqual(len(training), 1)
+        self.assertEqual(training[0]['resume_epoch'], 20)
+        self.assertIn(str(folder / 'checkpoint_epoch_20.pth'),
+                      training[0]['args'])
+        self.assertIn('25', training[0]['args'])
+        config = (self.root / 'setup_and_train.env').read_text()
+        self.assertIn('EPOCHS=25\n', config)
+        self.assertNotIn('RESUME', config)
+
+    def test_resume_best_aligns_history_to_selected_epoch(self):
+        result = self.run_wizard(model=3, epochs=5)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        folder = self.project / 'checkpoints/3speaker/skim'
+        (folder / 'checkpoint_epoch_10.pth').write_text(json.dumps({
+            'epoch': 10, 'train_losses': [-10] * 10,
+            'val_losses': [-10] * 10,
+        }))
+        (folder / 'training_history.json').write_text(json.dumps({
+            'train_losses': [-10] * 10, 'val_losses': [-10] * 10,
+        }))
+        result = self.run_wizard(model=3, configure=False,
+                                 training_answers=['2', '8'])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        training = [e for e in self.events() if e['event'] == 'train'][-1]
+        self.assertIn(str(folder / 'best_model.pth'), training['args'])
+        self.assertEqual(training['resume_epoch'], 5)
+        self.assertEqual(training['history_before']['val_losses'], [-1] * 5)
+        history = json.loads((folder / 'training_history.json').read_text())
+        self.assertEqual(len(history['val_losses']), 8)
+        self.assertFalse((folder / 'checkpoint_epoch_10.pth').exists())
+        backups = list(folder.parent.glob('skim.backup.*/original'))
+        self.assertEqual(len(backups), 1)
+        self.assertTrue((backups[0] / 'checkpoint_epoch_10.pth').exists())
+
+    def test_older_epoch_rollback_preserves_future_best_and_resume_state(self):
+        result = self.run_wizard(model=1, epochs=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        folder = self.project / 'checkpoints/2speaker/skim'
+        old_best = (folder / 'best_model.pth').read_bytes()
+        snapshot = {
+            'epoch': 5, 'train_losses': [-1] * 5, 'val_losses': [-1] * 5,
+            'val_loss': -1, 'best_val_loss': -2,
+        }
+        (folder / 'checkpoint_epoch_5.pth').write_text(json.dumps(snapshot))
+        self.env['FAKE_INTERRUPT'] = '1'
+        result = self.run_wizard(model=1, configure=False,
+                                 training_answers=['2', '8'])
+        self.assertNotEqual(result.returncode, 0)
+        self.env.pop('FAKE_INTERRUPT')
+        backups = list(folder.parent.glob('skim.backup.*/original'))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual((backups[0] / 'best_model.pth').read_bytes(), old_best)
+        checkpoint = json.loads((folder / 'checkpoint_epoch_5.pth').read_text())
+        self.assertEqual(checkpoint['best_val_loss'], -1)
+        result = self.run_wizard(model=1, configure=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        training = [e for e in self.events() if e['event'] == 'train'][-1]
+        self.assertEqual(training['resume_epoch'], 7)
+
+    def test_start_fresh_preserves_old_results_and_reuses_dataset(self):
+        result = self.run_wizard(model=1, epochs=2)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        folder = self.project / 'checkpoints/2speaker/skim'
+        original = (folder / 'best_model.pth').read_bytes()
+        (folder / 'user-notes.txt').write_text('keep this run')
+        before = self.events()
+        result = self.run_wizard(model=1, configure=False,
+                                 training_answers=['n', '3'])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        backups = list(folder.parent.glob('skim.backup.*/original'))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual((backups[0] / 'best_model.pth').read_bytes(), original)
+        self.assertEqual((backups[0] / 'user-notes.txt').read_text(),
+                         'keep this run')
+        training = self.events()[len(before):]
+        self.assertEqual(len(training), 1)
+        self.assertNotIn('--resume-from', training[0]['args'])
+        self.assertEqual(training[0]['history_before']['val_losses'], [])
+
+    def test_skip_incomplete_run_leaves_checkpoint_and_settings_unchanged(self):
+        self.env['FAKE_INTERRUPT'] = '1'
+        result = self.run_wizard(model=1, epochs=3)
+        self.assertNotEqual(result.returncode, 0)
+        self.env.pop('FAKE_INTERRUPT')
+        before = self.events()
+        result = self.run_wizard(model=1, configure=False,
+                                 training_answers=['s'])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('Training skipped', result.stdout)
+        self.assertEqual(self.events(), before)
+
+    def test_legacy_checkpoint_without_history_can_resume_and_skip_later(self):
+        result = self.run_wizard(model=1, epochs=5)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        folder = self.project / 'checkpoints/2speaker/skim'
+        (folder / 'training_history.json').unlink()
+        (folder / 'best_model.pth').write_text(json.dumps({'epoch': 7}))
+        result = self.run_wizard(model=1, configure=False,
+                                 training_answers=['1', '9'])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        history = json.loads((folder / 'training_history.json').read_text())
+        self.assertEqual(len(history['val_losses']), 2)
+        (folder / 'best_model.pth').write_text(json.dumps({'epoch': 8}))
+        before = self.events()
+        result = self.run_wizard(model=1, configure=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.events(), before)
+
+    def test_invalid_target_epoch_preserves_existing_run(self):
+        result = self.run_wizard(model=1, epochs=5)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        folder = self.project / 'checkpoints/2speaker/skim'
+        history = (folder / 'training_history.json').read_bytes()
+        before = self.events()
+        result = self.run_wizard(model=1, configure=False,
+                                 training_answers=['1', '5'])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Target epochs must exceed checkpoint epoch',
+                      result.stderr)
+        self.assertEqual(self.events(), before)
+        self.assertEqual((folder / 'training_history.json').read_bytes(),
+                         history)
+
+    def test_old_completed_run_without_marker_keeps_skip_default(self):
+        result = self.run_wizard(model=1, epochs=3)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        folder = self.project / 'checkpoints/2speaker/skim'
+        (folder / '.wizard-training-complete.json').unlink()
+        (folder / 'checkpoint_interrupted.pth').write_text(
+            json.dumps({'epoch': 99})
+        )
+        before = self.events()
+        result = self.run_wizard(model=1, configure=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('Interrupted snapshot excluded', result.stdout)
+        self.assertNotIn('(epoch 99)', result.stdout)
+        self.assertEqual(self.events(), before)
+
+    def test_invalid_resume_choice_can_be_corrected_without_setup(self):
+        result = self.run_wizard(model=1, epochs=5)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        result = self.run_wizard(model=1, configure=False,
+                                 training_answers=['99', '1', '6'])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('Choose a listed checkpoint number', result.stdout)
+        self.assertNotIn('first-run setup', result.stdout)
+        training = [e for e in self.events() if e['event'] == 'train'][-1]
+        self.assertEqual(training['resume_epoch'], 5)
+
+    def test_unreadable_checkpoint_does_not_hide_valid_best_model(self):
+        result = self.run_wizard(model=1)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        folder = self.project / 'checkpoints/2speaker/skim'
+        (folder / 'checkpoint_epoch_3.pth').write_text('not a checkpoint')
+        result = self.run_wizard(model=1, configure=False,
+                                 training_answers=['1', '2'])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('Skipping unreadable checkpoint', result.stderr)
+        training = [e for e in self.events() if e['event'] == 'train'][-1]
+        self.assertEqual(training['resume_epoch'], 1)
+        self.assertIn(str(folder / 'best_model.pth'), training['args'])
+
+    def test_transfer_source_resume_updates_only_pretraining_target(self):
+        result = self.run_wizard()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        folder = self.project / 'checkpoints/2speaker/skim-attention'
+        best = folder / 'best_model.pth'
+        best.rename(folder / 'checkpoint_epoch_1.pth')
+        before = self.events()
+        result = self.run_wizard(configure=False,
+                                 training_answers=['1', '2'])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        training = self.events()[len(before):]
+        self.assertEqual(len(training), 1)
+        self.assertEqual(training[0]['speakers'], '2')
+        self.assertEqual(training[0]['resume_epoch'], 1)
+        config = (self.root / 'setup_and_train.env').read_text()
+        self.assertIn('PRETRAIN_EPOCHS=2\n', config)
+        self.assertIn('\nEPOCHS=1\n', config)
 
     def test_old_remote_clone_is_rejected_before_setup(self):
         (self.source / 'train/datasets_utils.py').write_text('pass\n')

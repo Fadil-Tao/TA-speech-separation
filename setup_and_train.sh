@@ -13,7 +13,7 @@ case "${1:-}" in
             'Usage: bash setup_and_train.sh [--configure]' \
             'First run asks for paths, model, epochs, total dataset hours, and ZIP source.' \
             'Python 3.10/3.11 is detected automatically; missing Python 3.11 is installed with uv.' \
-            'Later runs reuse setup_and_train.env and resume completed checkpoints.' \
+            'Later runs reuse setup_and_train.env and offer resume, fresh training, or skip.' \
             'Use --configure to change saved choices. ZIP passwords are not saved.' \
             'Requires Bash, Git, curl for automatic Python installation, and an NVIDIA GPU for CUDA mode.'
         exit 0 ;;
@@ -26,7 +26,10 @@ stage() { printf '\n[%s/7] %s\n' "$1" "$2"; }
 ask() {
     local variable=$1 question=$2 default=$3 reply
     printf '%s [%s]: ' "$question" "$default"
-    IFS= read -r reply || die 'Input closed. Run script in an interactive terminal.'
+    if ! IFS= read -r reply; then
+        [[ "${4:-}" == optional ]] || die 'Input closed. Run script in an interactive terminal.'
+        printf '\n'
+    fi
     printf -v "$variable" '%s' "${reply:-$default}"
 }
 
@@ -120,11 +123,15 @@ if [[ -f "$ZIP_SOURCE" ]]; then
     ZIP_SOURCE=$("$PYTHON_BIN" -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).resolve())' "$ZIP_SOURCE")
 fi
 
-umask 077
-for variable in PROJECT_DIR PYTHON_BIN DEVICE GPU_ID MODEL EPOCHS PRETRAIN_EPOCHS TARGET_HOURS ZIP_SOURCE; do
-    printf '%s=%q\n' "$variable" "${!variable}"
-done > "$CONFIG_FILE.tmp"
-mv -- "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+save_choices() {
+    local variable
+    umask 077
+    for variable in PROJECT_DIR PYTHON_BIN DEVICE GPU_ID MODEL EPOCHS PRETRAIN_EPOCHS TARGET_HOURS ZIP_SOURCE; do
+        printf '%s=%q\n' "$variable" "${!variable}"
+    done > "$CONFIG_FILE.tmp"
+    mv -- "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+}
+save_choices
 
 stage 1 'Clone clean project'
 command -v git >/dev/null 2>&1 || die 'Install Git first.'
@@ -351,8 +358,10 @@ done
 
 stage 6 'Train model with on-the-fly mixtures'
 run_training() {
-    local script=$1 checkpoint_dir=$2 epochs=$3 resume
-    local -a command
+    local script=$1 checkpoint_dir=$2 epochs=$3 epochs_variable=${4:-EPOCHS}
+    local resume='' resume_epoch=0 initial_history=0 completed=0
+    local inventory choice default epoch path index backup restart=0
+    local -a command checkpoints=() checkpoint_epochs=()
     mkdir -p -- "$checkpoint_dir"
     if python - "$checkpoint_dir" "$epochs" <<'PY'
 import json
@@ -364,45 +373,158 @@ history = root / 'training_history.json'
 if not history.exists() or not (root / 'best_model.pth').exists():
     sys.exit(1)
 data = json.loads(history.read_text())
-sys.exit(0 if len(data.get('val_losses', [])) >= int(sys.argv[2]) else 1)
+count = len(data.get('val_losses', []))
+complete = count >= int(sys.argv[2])
+marker = root / '.wizard-training-complete.json'
+if marker.exists():
+    saved = json.loads(marker.read_text())
+    complete = complete or (
+        saved.get('epoch', 0) >= int(sys.argv[2])
+        and saved.get('history_length') == count
+    )
+sys.exit(0 if complete else 1)
 PY
     then
-        printf 'Training already completed: %s\n' "$checkpoint_dir"
-        return
+        completed=1
     fi
-    resume=$(python - "$checkpoint_dir" <<'PY'
+    inventory=$(python - "$checkpoint_dir" <<'PY'
+import pickle
 import sys
 from pathlib import Path
 
 import torch
 
 root = Path(sys.argv[1])
-paths = list(root.glob('checkpoint_epoch_*.pth'))
+paths = sorted(root.glob('checkpoint_epoch_*.pth'))
 if (root / 'best_model.pth').exists():
     paths.append(root / 'best_model.pth')
-checkpoints = [
-    (int(torch.load(path, map_location='cpu', weights_only=False)['epoch']), path)
-    for path in paths
-]
-if checkpoints:
-    print(max(checkpoints, key=lambda item: item[0])[1])
+checkpoints = []
+for path in paths:
+    try:
+        checkpoint = torch.load(path, map_location='cpu', weights_only=False)
+        epoch = int(checkpoint.get('epoch', 0))
+        if epoch < 0:
+            raise ValueError('Negative checkpoint epoch')
+    except (OSError, RuntimeError, ValueError, TypeError, KeyError, EOFError,
+            AttributeError, pickle.UnpicklingError) as error:
+        print(f'Skipping unreadable checkpoint {path.name}: {error}',
+              file=sys.stderr)
+        continue
+    checkpoints.append((epoch, path))
+for epoch, path in sorted(checkpoints, key=lambda item: item[0], reverse=True):
+    print(f'{epoch}\t{path}')
 PY
     )
+    if [[ -n "$inventory" || -f "$checkpoint_dir/training_history.json" ]] ||
+        compgen -G "$checkpoint_dir/*.pth" >/dev/null; then
+        printf '\nExisting training results: %s\n' "$checkpoint_dir"
+        if [[ -n "$inventory" ]]; then
+            while IFS=$'\t' read -r epoch path; do
+                checkpoint_epochs+=("$epoch")
+                checkpoints+=("$path")
+                printf '  %s. %s (epoch %s)\n' "${#checkpoints[@]}" "${path##*/}" "$epoch"
+            done <<< "$inventory"
+            [[ "${checkpoint_epochs[0]}" -lt "$epochs" ]] || completed=1
+        fi
+        if [[ -f "$checkpoint_dir/checkpoint_interrupted.pth" ]]; then
+            printf 'Interrupted snapshot excluded: its last epoch may be unfinished.\n'
+        fi
+        printf '  n. Start fresh (back up existing results)\n  s. Skip training; keep existing results\n'
+        default=1
+        [[ "$completed" == 0 && "${#checkpoints[@]}" -gt 0 ]] || default=s
+        while true; do
+            ask choice 'Resume checkpoint number, n = fresh, s = skip' "$default" optional
+            case "$choice" in
+                s|S)
+                    printf 'Training skipped; existing results unchanged: %s\n' "$checkpoint_dir"
+                    return ;;
+                n|N) restart=1; break ;;
+                *)
+                    if [[ "$choice" =~ ^[1-9][0-9]{0,8}$ && "$choice" -le "${#checkpoints[@]}" ]]; then
+                        index=$((choice - 1))
+                        resume=${checkpoints[$index]}
+                        resume_epoch=${checkpoint_epochs[$index]}
+                        break
+                    fi
+                    printf 'Choose a listed checkpoint number, n, or s.\n' ;;
+            esac
+        done
+        default=$epochs
+        (( default > resume_epoch )) || default=$((resume_epoch + 1))
+        ask epochs "Total target epochs (continue after epoch $resume_epoch)" "$default" optional
+        [[ "$epochs" =~ ^[1-9][0-9]*$ ]] || die 'Epoch counts must be positive integers.'
+        (( epochs > resume_epoch )) || die 'Target epochs must exceed checkpoint epoch.'
+        printf -v "$epochs_variable" '%s' "$epochs"
+        save_choices
+        if [[ "$restart" == 1 ]] ||
+            { [[ -n "$resume" ]] && (( resume_epoch < checkpoint_epochs[0] )); }; then
+            backup=$(mktemp -d "$checkpoint_dir.backup.XXXXXX")
+            mv -- "$checkpoint_dir" "$backup/original"
+            mkdir -p -- "$checkpoint_dir"
+            printf 'Previous results preserved: %s/original\n' "$backup"
+            if [[ -n "$resume" ]]; then
+                for index in "${!checkpoints[@]}"; do
+                    if (( checkpoint_epochs[index] <= resume_epoch )); then
+                        path=${checkpoints[$index]##*/}
+                        cp -- "$backup/original/$path" "$checkpoint_dir/$path"
+                    fi
+                done
+                if [[ -f "$backup/original/training_history.json" ]]; then
+                    cp -- "$backup/original/training_history.json" "$checkpoint_dir/training_history.json"
+                fi
+                resume="$checkpoint_dir/${resume##*/}"
+            fi
+        fi
+    fi
     command=(python -u "$script" --num-epochs "$epochs")
     if [[ -n "$resume" ]]; then
+        if [[ -f "$checkpoint_dir/training_history.json" ]]; then
+            backup=$(mktemp "$checkpoint_dir/training_history.backup.XXXXXX")
+            cp -- "$checkpoint_dir/training_history.json" "$backup"
+        fi
+        initial_history=$(python - "$resume" "$checkpoint_dir/training_history.json" "$resume_epoch" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+import torch
+
+checkpoint = torch.load(sys.argv[1], map_location='cpu', weights_only=False)
+path = Path(sys.argv[2])
+best = path.parent / 'best_model.pth'
+if not best.exists():
+    checkpoint['best_val_loss'] = checkpoint.get('val_loss', float('inf'))
+    torch.save(checkpoint, sys.argv[1])
+    torch.save(checkpoint, best)
+old = json.loads(path.read_text()) if path.exists() else {}
+epoch = int(sys.argv[3])
+history = {}
+for name in ('train_losses', 'val_losses'):
+    values = checkpoint.get(name, old.get(name, []))
+    history[name] = values[:epoch]
+path.write_text(json.dumps(history))
+print(len(history['val_losses']))
+PY
+        )
         printf 'Resuming completed checkpoint: %s\n' "$resume"
         command+=(--resume-from "$resume")
     fi
     "${command[@]}" 2>&1 | tee -a "$checkpoint_dir/run.log"
-    python - "$checkpoint_dir/training_history.json" "$epochs" <<'PY'
+    python - "$checkpoint_dir/training_history.json" "$epochs" "$resume_epoch" "$initial_history" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
 history = json.loads(path.read_text()) if path.exists() else {}
-if len(history.get('val_losses', [])) < int(sys.argv[2]):
+count = len(history.get('val_losses', []))
+expected = int(sys.argv[4]) + int(sys.argv[2]) - int(sys.argv[3])
+if count < expected:
     raise SystemExit('Training stopped before requested epochs. Rerun to resume.')
+marker = path.parent / '.wizard-training-complete.json'
+marker.write_text(json.dumps({
+    'epoch': int(sys.argv[2]), 'history_length': count,
+}))
 PY
 }
 
@@ -414,8 +536,9 @@ if [[ "$MODEL" == 5 || "$MODEL" == 6 ]]; then
     if [[ ! -f "$source_dir/best_model.pth" ]]; then
         printf 'Transfer source missing; training %s with 2 speakers first.\n' "$variant"
         run_training "train/2speaker/$variant/train_${stem}_2spk.py" \
-            "$source_dir" "$PRETRAIN_EPOCHS"
+            "$source_dir" "$PRETRAIN_EPOCHS" PRETRAIN_EPOCHS
     fi
+    [[ -f "$source_dir/best_model.pth" ]] || die 'Transfer requires a two-speaker best_model.pth; source training was skipped.'
     # Avoid an inherited override redirecting transfer to a different checkpoint.
     export TSS_PRETRAINED_PATH="$source_dir/best_model.pth"
     output_dir="$TSS_CHECKPOINT_DIR/3speaker/${variant}-transfer"
@@ -428,6 +551,10 @@ else
 fi
 
 stage 7 'Finished'
-printf 'Best model: %s/best_model.pth\n' "$output_dir"
+if [[ -f "$output_dir/best_model.pth" ]]; then
+    printf 'Best model: %s/best_model.pth\n' "$output_dir"
+else
+    printf 'No best model saved; training was skipped.\n'
+fi
 printf 'Training log: %s/run.log\n' "$output_dir"
 printf 'Saved choices: %s\n' "$CONFIG_FILE"
