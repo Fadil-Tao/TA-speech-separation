@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import argparse
 import random
 import numpy as np
 import torch
@@ -15,7 +16,12 @@ from datetime import datetime
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(project_root / 'train'))
-from datasets_utils import IndonesianMixDataset
+from datasets_utils import (
+    DynamicMixDataset,
+    IndonesianMixDataset,
+    build_utterance_split,
+)
+from utils.paths import get_raw_dir
 from espnet2.enh.encoder.conv_encoder import ConvEncoder
 from implementation.conv_encoder_abs import ConvEncoderAbs
 from espnet2.enh.decoder.conv_decoder import ConvDecoder
@@ -26,6 +32,7 @@ from implementation.skim_attention.skim_attention_separator import SkiMAttention
 MODEL_CONFIG = {'encoder': {'channel': 256, 'kernel_size': 16, 'stride': 8}, 'decoder': {'channel': 256, 'kernel_size': 16, 'stride': 8}, 'separator': {'input_dim': 256, 'causal': False, 'num_spk': 3, 'predict_noise': False, 'nonlinear': 'relu', 'layer': 4, 'unit': 256, 'segment_size': 150, 'dropout': 0.1, 'mem_type': 'hc', 'seg_overlap': False, 'num_heads': 4}}
 TRAIN_CONFIG = {'batch_size': 8, 'num_epochs': 100, 'learning_rate': 0.001, 'weight_decay': 0.0, 'gradient_clip': 5.0, 'seed': 42}
 DATASET_DIR = project_root / 'dataset' / 'synthetic' / 'TITML-3spk-v2'
+RAW_DIR = get_raw_dir()
 CHECKPOINT_DIR = project_root / 'checkpoints' / '3speaker' / 'skim-attention'
 CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -142,7 +149,7 @@ def validate(model, val_loader, device, epoch):
     avg_loss = total_loss / num_batches
     return avg_loss
 
-def main():
+def main(resume_from=None, num_epochs=None):
     random.seed(TRAIN_CONFIG['seed'])
     np.random.seed(TRAIN_CONFIG['seed'])
     torch.manual_seed(TRAIN_CONFIG['seed'])
@@ -150,8 +157,24 @@ def main():
         torch.cuda.manual_seed(TRAIN_CONFIG['seed'])
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f'Using device: {device}')
+    print('\nBuilding utterance-level train/dev/test split...')
+    train_utts, _, _ = build_utterance_split(
+        RAW_DIR,
+        seed=TRAIN_CONFIG['seed'],
+        train_ratio=0.8,
+        dev_ratio=0.1,
+    )
     print('\nLoading datasets...')
-    train_dataset = IndonesianMixDataset(split='train', dataset_dir=DATASET_DIR, num_speakers=3, augment=False, target_duration=5.0)
+    train_dataset = DynamicMixDataset(
+        utterances_by_speaker=train_utts,
+        num_speakers=3,
+        target_duration=5.0,
+        target_sr=16000,
+        snr_range=(-5.0, 5.0),
+        epoch_size=int(os.environ.get('TSS_TRAIN_EPOCH_SIZE', 28800)),
+        gender_balance=True,
+        augment=True,
+    )
     dev_dataset = IndonesianMixDataset(split='dev', dataset_dir=DATASET_DIR, num_speakers=3, augment=False, target_duration=5.0)
     test_dataset = IndonesianMixDataset(split='test', dataset_dir=DATASET_DIR, num_speakers=3, augment=False, target_duration=5.0)
     train_loader = DataLoader(train_dataset, batch_size=TRAIN_CONFIG['batch_size'], shuffle=True, num_workers=8, pin_memory=True, persistent_workers=True)
@@ -165,12 +188,33 @@ def main():
     scaler = torch.amp.GradScaler('cuda')
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, min_lr=1e-06, verbose=True)
     best_val_loss = float('inf')
+    start_epoch = 1
+    target_num_epochs = num_epochs if num_epochs is not None else TRAIN_CONFIG['num_epochs']
+    if resume_from is not None:
+        resume_path = CHECKPOINT_DIR / resume_from
+        checkpoint = torch.load(resume_path, map_location=device, weights_only=False)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        if 'optimizer_state_dict' in checkpoint:
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        if 'scheduler_state_dict' in checkpoint:
+            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        if 'scaler_state_dict' in checkpoint:
+            scaler.load_state_dict(checkpoint['scaler_state_dict'])
+        best_val_loss = checkpoint.get('best_val_loss', checkpoint.get('val_loss', best_val_loss))
+        start_epoch = checkpoint.get('epoch', 0) + 1
+        print(f'Resumed from epoch {start_epoch - 1}.')
     train_losses, val_losses = load_training_history(CHECKPOINT_DIR)
+    if not train_losses and resume_from is not None:
+        train_losses = checkpoint.get('train_losses', [])
+        val_losses = checkpoint.get('val_losses', [])
+    if start_epoch > 1:
+        train_losses = train_losses[:start_epoch - 1]
+        val_losses = val_losses[:start_epoch - 1]
     print('\n' + '=' * 60)
     print('Starting Training')
     print('=' * 60)
     try:
-        for epoch in range(1, TRAIN_CONFIG['num_epochs'] + 1):
+        for epoch in range(start_epoch, target_num_epochs + 1):
             train_loss = train_epoch(model, train_loader, optimizer, scaler, device, epoch)
             train_losses.append(train_loss)
             val_loss = validate(model, dev_loader, device, epoch)
@@ -203,4 +247,8 @@ def main():
                 json.dump({'model_config': MODEL_CONFIG, 'train_config': TRAIN_CONFIG, 'best_val_loss': best_val_loss, 'best_si_snr': -best_val_loss}, f, indent=2)
             print(f'Config saved')
 if __name__ == '__main__':
-    main()
+    parser = argparse.ArgumentParser(description='Train SkiM Attention 3-speaker model')
+    parser.add_argument('--resume-from', type=str, default=None)
+    parser.add_argument('--num-epochs', type=int, default=None)
+    args = parser.parse_args()
+    main(resume_from=args.resume_from, num_epochs=args.num_epochs)

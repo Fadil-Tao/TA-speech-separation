@@ -16,7 +16,11 @@ from datetime import datetime
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(project_root / 'train'))
-from datasets_utils import IndonesianMixDataset
+from datasets_utils import (
+    DynamicMixDataset,
+    IndonesianMixDataset,
+    build_utterance_split,
+)
 from utils.paths import get_raw_dir, get_synthetic_dir, get_checkpoint_dir
 from espnet2.enh.encoder.conv_encoder import ConvEncoder
 from implementation.conv_encoder_abs import ConvEncoderAbs
@@ -28,6 +32,7 @@ from implementation.skim.skim_separator import SkiMSeparator
 MODEL_CONFIG = {'encoder': {'channel': 256, 'kernel_size': 16, 'stride': 8}, 'decoder': {'channel': 256, 'kernel_size': 16, 'stride': 8}, 'separator': {'input_dim': 256, 'causal': False, 'num_spk': 3, 'predict_noise': False, 'nonlinear': 'relu', 'layer': 4, 'unit': 256, 'segment_size': 150, 'dropout': 0.1, 'mem_type': 'hc', 'seg_overlap': False}}
 TRAIN_CONFIG = {'batch_size': 8, 'num_epochs': 100, 'learning_rate': 0.001, 'weight_decay': 0.0, 'gradient_clip': 5.0, 'seed': 42}
 DATASET_DIR = get_synthetic_dir('TITML-3spk-v2')
+RAW_DIR = get_raw_dir()
 CHECKPOINT_DIR = get_checkpoint_dir('3speaker', 'skim')
 
 def resolve_resume_path(resume_from):
@@ -181,8 +186,24 @@ def main(resume_from=None, num_epochs=None, dataset_dir=None, checkpoint_dir=Non
         torch.cuda.manual_seed(TRAIN_CONFIG['seed'])
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f'Using device: {device}')
+    print('\nBuilding utterance-level train/dev/test split...')
+    train_utts, _, _ = build_utterance_split(
+        RAW_DIR,
+        seed=TRAIN_CONFIG['seed'],
+        train_ratio=0.8,
+        dev_ratio=0.1,
+    )
     print('\nLoading datasets...')
-    train_dataset = IndonesianMixDataset(split='train', dataset_dir=DATASET_DIR, num_speakers=3, augment=False, target_duration=5.0)
+    train_dataset = DynamicMixDataset(
+        utterances_by_speaker=train_utts,
+        num_speakers=3,
+        target_duration=5.0,
+        target_sr=16000,
+        snr_range=(-5.0, 5.0),
+        epoch_size=int(os.environ.get('TSS_TRAIN_EPOCH_SIZE', 28800)),
+        gender_balance=True,
+        augment=True,
+    )
     dev_dataset = IndonesianMixDataset(split='dev', dataset_dir=DATASET_DIR, num_speakers=3, augment=False, target_duration=5.0)
     test_dataset = IndonesianMixDataset(split='test', dataset_dir=DATASET_DIR, num_speakers=3, augment=False, target_duration=5.0)
     train_loader = DataLoader(train_dataset, batch_size=TRAIN_CONFIG['batch_size'], shuffle=True, num_workers=8, pin_memory=True, persistent_workers=True)
